@@ -1,0 +1,146 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-base: #0a0e14;
+  --color-base-alt: #0d1219;
+  --color-surface: #10161f;
+  --color-raised: #151c27;
+  --color-overlay: #1a222e;
+  --color-line: #212b38;
+  --color-line-soft: #182028;
+  --color-ink: #e7edf4;
+  --color-ink-dim: #8996a6;
+  --color-ink-faint: #5b6675;
+  --color-accent: #ffb454;
+  --color-teal: #52e5c7;
+  --color-purple: #c792ea;
+  --color-blue: #7da6ff;
+  --color-red: #ff6b6b;
+  --color-green: #7ee787;
+
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --radius-panel: 10px;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  code,
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: #1a1206;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font-family: inherit;
+  }
+}
+
+.blueprint-shell {
+  background-image:
+    linear-gradient(var(--color-line-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-line-soft) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-attachment: fixed;
+}
+
+.blueprint-canvas {
+  background-image:
+    linear-gradient(var(--color-line-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-line-soft) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.radial-fade {
+  -webkit-mask-image: radial-gradient(circle at 50% 40%, black 0%, transparent 70%);
+  mask-image: radial-gradient(circle at 50% 40%, black 0%, transparent 70%);
+}
+
+.recharts-surface:focus,
+.recharts-wrapper:focus {
+  outline: none;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #111;
+  }
+
+  .print-doc {
+    background: #fff !important;
+    color: #111 !important;
+    border: none !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+
+  .print-doc * {
+    color: #111 !important;
+    border-color: #ccc !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
