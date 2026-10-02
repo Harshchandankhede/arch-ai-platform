@@ -113,7 +113,13 @@ export default function Login({ mode = 'login' }) {
     }
   }
 
-  if (isAuthed) return <Navigate to="/dashboard" replace />
+  // Honour the page the user was originally sent away from. Hard-coding /dashboard here
+  // meant a reload on /simulation bounced to the dashboard, whose auto-run pre-loaded a
+  // cached result — so the Simulation page never presented its own empty state.
+  const from = location.state?.from
+  if (isAuthed) {
+    return <Navigate to={from && typeof from === 'string' ? from : '/dashboard'} replace />
+  }
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">

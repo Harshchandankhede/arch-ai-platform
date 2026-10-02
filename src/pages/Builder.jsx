@@ -51,7 +51,7 @@ import { Badge, Button, Empty, Field, JsonPreview, PageHead, Spinner, inputClass
 import { NODE_H, NODE_W, NodeGlyph } from '../components/NodeShapes.jsx'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
 import { categoryColor, colors, withAlpha } from '../theme/tokens.js'
-import { templates } from '../services/projects.js'
+import { templates, isServerProjectId } from '../services/projects.js'
 import { createVersion, deleteVersion, listVersions, renameVersion, restoreVersion } from '../services/architectures.js'
 
 const DND_MIME = 'application/arch-ai-node'
@@ -716,6 +716,15 @@ export default function Builder() {
     async (isStale) => {
       if (!projectId) {
         versionsProjectRef.current = null
+        return
+      }
+      // Seed/local projects carry short ids ("p2") that the server cannot resolve.
+      // Asking anyway produced a guaranteed 404 and, before the notify-identity fix,
+      // an unbounded request loop. Skip the call instead.
+      if (!isServerProjectId(projectId)) {
+        versionsProjectRef.current = projectId
+        setVersions([])
+        setVersionsLoading(false)
         return
       }
       if (versionsProjectRef.current !== projectId) {

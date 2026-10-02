@@ -4,7 +4,9 @@ import { Activity, GitCompare, GitBranch, History, TrendingUp } from 'lucide-rea
 import { useApp } from '../store/AppContext.jsx'
 import { useResults } from '../store/useResults.js'
 import { getVersion, listVersions } from '../services/architectures.js'
+import { isServerProjectId } from '../services/projects.js'
 import { dimensionMeta, dimensionOrder, scoreColor, utilizationColor } from '../theme/tokens.js'
+import { utilPct } from '../lib/metrics.js'
 import {
   Badge,
   Card,
@@ -27,7 +29,7 @@ function toPct(value) {
 }
 
 function peakUtilisation(components) {
-  return Object.values(components || {}).reduce((max, c) => Math.max(max, Number(c.utilization) || 0), 0)
+  return Object.values(components || {}).reduce((max, c) => Math.max(max, utilPct(c.utilization)), 0)
 }
 
 function realDeviations(mining) {
@@ -273,8 +275,12 @@ export default function Comparison() {
 
   const projectId = chosenProjectId || currentProject?.id || projects[0]?.id || ''
 
+  // Seed/local ids ("p2") are not Mongo ObjectIds, so the versions route can only ever
+  // answer 404. Derive the empty result during render instead of requesting it.
+  const isServerProject = isServerProjectId(projectId)
+
   useEffect(() => {
-    if (!projectId) return undefined
+    if (!projectId || !isServerProject) return undefined
     let cancelled = false
 
     ;(async () => {
@@ -294,12 +300,12 @@ export default function Comparison() {
     return () => {
       cancelled = true
     }
-  }, [projectId])
+  }, [projectId, isServerProject])
 
   const listedHere = listed && listed.projectId === projectId
-  const versions = listedHere ? listed.versions : EMPTY_VERSIONS
+  const versions = !isServerProject ? EMPTY_VERSIONS : listedHere ? listed.versions : EMPTY_VERSIONS
   const listError = listedHere ? listed.error : null
-  const versionsLoading = Boolean(projectId) && !listedHere
+  const versionsLoading = Boolean(projectId) && isServerProject && !listedHere
 
   const aId = versions.some((v) => v.id === chosenA) ? chosenA : versions[0]?.id || ''
   const bId = versions.some((v) => v.id === chosenB) ? chosenB : versions[1]?.id || versions[0]?.id || ''

@@ -16,10 +16,29 @@ so a design can be validated *before* any code is written.
 | DES simulation | Browser (Web Worker) | `engine.js`, deterministic seeded RNG |
 | Process mining | Browser | conformance + bottleneck detection |
 | Health score evaluation | Browser | six weighted dimensions |
-| AI recommendations | Browser | **stubbed** — no model wired up yet |
+| AI recommendations | Browser | **deterministic rules** — no model wired up yet |
+| Interview scoring | Browser | **keyword matching** against a 14-question bank |
 
-Server-side simulation and persisted results are the next planned step. Simulation results
-are currently recomputed in the browser and are not stored.
+Simulation results are recomputed in the browser and held in an in-memory cache keyed by
+architecture hash and workload; they are **not persisted**, so a page reload discards them.
+
+The pipeline runs engine → mining → evaluation → recommendations in one pass, either in a
+Web Worker (`src/features/simulation/sim.worker.js`) or inline when workers are unavailable.
+
+### Scoring calibration
+
+`evaluation.js` scores six weighted dimensions. Two properties are enforced by the test
+suite because breaking either silently invalidates every number the UI shows:
+
+- The engine reports `failureRate`, `dropRate` and `memoryUtilization` as **percentages**.
+  `readMetrics` converts them to 0–1 fractions before they are compared against ceilings.
+- Latency is scored linearly inside the budget and decays exponentially past it, so two
+  architectures with different p95 values cannot tie at the same score.
+
+Queueing bottlenecks are measured as real `QUEUE_ENTER` → `QUEUE_EXIT` residence time. The
+engine also supplies per-component utilisation and `queueLengthMax`, which cannot be
+recovered from an event-log prefix alone. A system that never queues correctly reports **no**
+bottleneck rather than inventing one.
 
 ## Tech stack
 
@@ -63,8 +82,23 @@ Runs on `http://localhost:5173`. Point it at the API with `VITE_API_BASE_URL`
 | --- | --- | --- |
 | `npm run dev` | both | Start the dev server |
 | `npm run build` | frontend | Production build to `dist/` |
-| `npm run lint` | both | Oxlint |
-| `npm test` | backend | Test suite |
+| `npm run lint` | frontend | Oxlint |
+| `npm test` | frontend | Pipeline test suite (Node's built-in runner, no dependencies) |
+
+`npm test` covers the simulation → mining → evaluation → recommendations pipeline: engine
+determinism and capacity, conformance and bottleneck detection, dimension calibration,
+score ordering across architectures, and health-score monotonicity under rising load.
+
+### Simulation is started by the user
+
+The Simulation page does **not** run automatically. It opens on the workload configuration
+with a **Start Simulation** button, and nothing is simulated until that button is pressed.
+Downstream pages (Process Mining, Evaluation, Recommendations, Reports, Dashboard) keep
+auto-running when they are opened with no cached result, so navigating there directly still
+works. Pass `{ autoRun: false }` to `useResults` to opt out, as `Simulation.jsx` does.
+
+The worker is module-scoped and outlives page unmounts, so navigating away mid-run no longer
+discards the result — it is written to the store and picked up by the next page that mounts.
 
 ## Layout
 

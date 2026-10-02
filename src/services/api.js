@@ -10,6 +10,29 @@ export const tokenStore = {
   clear: () => localStorage.removeItem(TOKEN_KEY),
 }
 
+// A 401 must invalidate the whole session exactly once, not just the token. The
+// reducer keeps its own copy of the signed-in user, so clearing only localStorage
+// left the app rendering protected routes while every request went out unsigned.
+// Listeners are notified once per 401 burst; AppContext subscribes and dispatches
+// LOGOUT, which drops the user and sends them back to /login.
+const sessionListeners = new Set()
+
+export function onSessionInvalidated(listener) {
+  sessionListeners.add(listener)
+  return () => sessionListeners.delete(listener)
+}
+
+function invalidateSession() {
+  tokenStore.clear()
+  for (const listener of [...sessionListeners]) {
+    try {
+      listener()
+    } catch {
+      // a failing listener must not block the rest of the rejection path
+    }
+  }
+}
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
@@ -26,7 +49,9 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      tokenStore.clear()
+      // Never retry an unauthorised request. Clearing the token without clearing the
+      // redux session is what produced the repeated 401s in the request log.
+      invalidateSession()
     }
     const message =
       error.response?.data?.error?.message ||
@@ -38,6 +63,10 @@ api.interceptors.response.use(
     const wrapped = new Error(message)
     wrapped.status = error.response?.status
     wrapped.details = error.response?.data?.error?.details
+    // Callers read the server message from err.message, which is already set above.
+    // error.config is deliberately NOT copied across: it carries the Authorization
+    // header, and attaching it to every caught error would leak the JWT into any
+    // future logging or error reporting.
     return Promise.reject(wrapped)
   },
 )

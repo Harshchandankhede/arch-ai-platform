@@ -46,7 +46,10 @@ export function initFromStorage() {
         : projects[0].id
     return {
       ...initialState,
-      auth: parsed.auth || initialState.auth,
+      // Never restore auth from storage. A persisted user with no valid token is what
+      // produced the endless 401 loop; the session is re-established by LOGIN or by
+      // the startup token check in AppContext.
+      auth: initialState.auth,
       projects,
       currentProjectId,
       workload: { ...defaultWorkload, ...(parsed.workload || {}) },
@@ -59,8 +62,12 @@ export function initFromStorage() {
 }
 
 export function persistable(state) {
+  // `auth` is deliberately NOT persisted. The JWT lives in its own localStorage key
+  // (`archai.token`), so writing the user here created two sources of truth: a reload
+  // restored auth.user while the token had expired or been cleared by the 401
+  // interceptor, leaving the app "signed in" with no Authorization header, which made
+  // every protected request 401. Auth is re-derived from the token at startup instead.
   return {
-    auth: state.auth,
     projects: state.projects,
     currentProjectId: state.currentProjectId,
     workload: state.workload,

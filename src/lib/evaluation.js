@@ -5,7 +5,9 @@ import { categoryOf } from './contract.js'
 const LATENCY_BUDGET_MS = 200
 const LATENCY_P95_WEIGHT = 0.7
 const LATENCY_P99_WEIGHT = 0.3
-const LATENCY_DECAY_BUDGETS = 3
+// Score at exactly the budget, and how fast the score falls past it.
+const LATENCY_WITHIN_BUDGET_FLOOR = 0.55
+const LATENCY_DECAY_RATE = 1.2
 const PERFORMANCE_ERROR_CEILING = 0.1
 const PERFORMANCE_ERROR_WEIGHT = 0.3
 const SCALABILITY_UTIL_FREE = 0.6
@@ -42,6 +44,10 @@ const num = (v, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback
 }
 const rate = (v) => clamp(num(v), 0, 1)
+// The engine reports failureRate, dropRate and memoryUtilization as percentages
+// (0-100). Scoring compares them against ceilings expressed as 0-1 fractions, so
+// they must be converted before the comparison or every value saturates.
+const pctRate = (v) => clamp(num(v) / 100, 0, 1)
 const round1 = (v) => Math.round(v * 10) / 10
 const round2 = (v) => Math.round(v * 100) / 100
 const pct1 = (v) => Math.round(clamp(v, 0, 1) * 1000) / 10
@@ -148,9 +154,9 @@ export function readMetrics(sim) {
     p99: num(m.p99),
     max: num(m.maxLatencyMs),
     throughput: num(m.throughputPerSec),
-    failureRate: rate(m.failureRate),
-    dropRate: rate(m.dropRate),
-    successRate: rate(m.successRate),
+    failureRate: pctRate(m.failureRate),
+    dropRate: pctRate(m.dropRate),
+    successRate: pctRate(m.successRate),
     arrivalRate: num(m.arrivalRate ?? sim?.arrivalRate),
     concurrent: num(m.concurrentUsers ?? sim?.concurrentUsers),
   }
@@ -161,7 +167,7 @@ function peakComponents(components) {
     .map((c) => ({ c, utilization: rate(c.utilization) }))
     .sort((a, b) => b.utilization - a.utilization)
   const byMemory = components
-    .map((c) => ({ c, used: rate(c.memoryUtilization) }))
+    .map((c) => ({ c, used: pctRate(c.memoryUtilization) }))
     .sort((a, b) => b.used - a.used)
   return {
     topUtil: byUtil[0] || null,
@@ -172,7 +178,16 @@ function peakComponents(components) {
 }
 
 function latencyScore(valueMs) {
-  return 100 * clamp((LATENCY_DECAY_BUDGETS * LATENCY_BUDGET_MS - num(valueMs)) / ((LATENCY_DECAY_BUDGETS - 1) * LATENCY_BUDGET_MS), 0, 1)
+  const v = num(valueMs)
+  if (!(v > 0)) return 100
+  // Linear inside the budget so every millisecond counts, then an exponential
+  // tail out to LATENCY_DECAY_BUDGETS so heavily overloaded runs still separate
+  // instead of both clamping to zero.
+  const budget = LATENCY_BUDGET_MS
+  if (v <= budget) return 100 * (1 - (v / budget) * (1 - LATENCY_WITHIN_BUDGET_FLOOR))
+  const over = (v - budget) / budget
+  const tail = Math.exp(-LATENCY_DECAY_RATE * over)
+  return 100 * LATENCY_WITHIN_BUDGET_FLOOR * clamp(tail, 0, 1)
 }
 
 function performance(sim) {
@@ -186,7 +201,7 @@ function performance(sim) {
   const overBudget = m.p95 > LATENCY_BUDGET_MS
   return {
     value: score(value),
-    note: `p95 latency measured ${round1(m.p95)} ms against a ${LATENCY_BUDGET_MS} ms budget (p99 ${round1(m.p99)} ms, average ${round1(m.avg)} ms), and ${pct1(loss)}% of ${m.total} requests were lost to failures (${pct1(m.failureRate)}%) or drops (${pct1(m.dropRate)}%); latency is scored ${Math.round(LATENCY_P95_WEIGHT * 100)}% p95 / ${Math.round(LATENCY_P99_WEIGHT * 100)}% p99 on a 3x-budget decay and the remaining ${Math.round(PERFORMANCE_ERROR_WEIGHT * 100)}% treats ${pct1(PERFORMANCE_ERROR_CEILING)}% combined loss as zero${overBudget ? `, so p95 is ${round1(m.p95 - LATENCY_BUDGET_MS)} ms over budget` : ', so p95 sits inside budget'}.`,
+    note: `p95 latency measured ${round1(m.p95)} ms against a ${LATENCY_BUDGET_MS} ms budget (p99 ${round1(m.p99)} ms, average ${round1(m.avg)} ms), and ${pct1(loss)}% of ${m.total} requests were lost to failures (${pct1(m.failureRate)}%) or drops (${pct1(m.dropRate)}%); latency is scored ${Math.round(LATENCY_P95_WEIGHT * 100)}% p95 / ${Math.round(LATENCY_P99_WEIGHT * 100)}% p99 on a linear-inside-budget curve that decays exponentially past it, and the remaining ${Math.round(PERFORMANCE_ERROR_WEIGHT * 100)}% treats ${pct1(PERFORMANCE_ERROR_CEILING)}% combined loss as zero${overBudget ? `, so p95 is ${round1(m.p95 - LATENCY_BUDGET_MS)} ms over budget` : ', so p95 sits inside budget'}.`,
   }
 }
 

@@ -1,6 +1,15 @@
 import api from './api.js'
 import { starterArchitecture, strongArchitecture, weakArchitecture } from '../data/seedArchitectures.js'
 
+// Backend project ids are Mongo ObjectIds (24 hex chars). Seed and locally-generated
+// projects use short ids like "p1"/"p2", which no server route can resolve. Callers
+// use this to skip requests that are guaranteed to 404 instead of retrying them.
+const SERVER_ID = /^[a-fA-F0-9]{24}$/
+
+export function isServerProjectId(id) {
+  return SERVER_ID.test(String(id || ''))
+}
+
 export const templates = [
   { key: 'blank', label: 'Blank canvas', build: () => ({ nodes: [], edges: [] }) },
   { key: 'starter', label: 'Simple 3-tier (User → API → Server → DB)', build: starterArchitecture },

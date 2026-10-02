@@ -122,6 +122,7 @@ function readCase(c) {
   const retries = new Map()
   const failures = new Map()
   const openStarts = new Map()
+  const openEnters = new Map()
   let lastExit = null
   let completed = false
   let dropped = false
@@ -167,7 +168,9 @@ function readCase(c) {
     if (e.activity === QUEUE_ENTER) {
       const key = e.componentName || e.componentId
       const gap = lastExit ? e.timestamp - lastExit.ts : 0
-      if (lastExit) addWait(key, gap)
+      const enters = openEnters.get(key) || []
+      enters.push(e.timestamp)
+      openEnters.set(key, enters)
       queues.push({ from: lastExit?.name || '', fromId: lastExit?.id || '', to: key, toId: e.componentId, wait: gap })
       lastExit = null
       const d = (depth.get(key) || 0) + 1
@@ -178,13 +181,23 @@ function readCase(c) {
     }
     if (e.activity === QUEUE_EXIT) {
       const key = e.componentName || e.componentId
+      const enters = openEnters.get(key)
+      const enteredAt = enters?.length ? enters.shift() : null
+      if (enteredAt != null) {
+        const residence = e.timestamp - enteredAt
+        if (residence > 0) {
+          addWait(key, residence)
+          const rec = waited.get(key) || { total: 0, max: 0, count: 0 }
+          rec.max = Math.max(rec.max, residence)
+          waited.set(key, rec)
+        }
+      }
       depth.set(key, Math.max(0, (depth.get(key) || 0) - 1))
       push(e)
       continue
     }
     if (e.activity === PROCESS_START) {
       const key = e.componentName || e.componentId
-      if (lastExit) addWait(key, e.timestamp - lastExit.ts)
       lastExit = null
       if (!openStarts.has(key)) openStarts.set(key, [])
       openStarts.get(key).push(e.timestamp)
@@ -390,8 +403,8 @@ function bottleneckNote(component, stats) {
   const proc = ms1(stats.avgProcessing)
   const ratio = round3(stats.waitRatio)
   const util = stats.derived
-    ? `, a peak queue of ${stats.queueDepthMax} and ${pct1(stats.utilisation)}% supplied utilisation`
-    : ` and a peak queue of ${stats.queueDepthMax}, with no utilisation available because an event log prefix cannot yield it`
+    ? `, with a peak queue of ${stats.queueDepthMax}; utilisation is unavailable because it cannot be recovered from an event log prefix`
+    : ` and a peak queue of ${stats.queueDepthMax}, at ${pct1(stats.utilisation)}% supplied utilisation`
   return `${component} makes requests wait ${wait} ms on average against ${proc} ms of processing, a wait ratio of ${ratio}x over ${stats.visits} visits${util}.`
 }
 
@@ -432,13 +445,17 @@ function buildBottlenecks(records, options) {
     const componentId = ids.get(key) || key
     const measured = supplied ? supplied[componentId] ?? supplied[key] : undefined
     const utilisation = clamp(measured != null ? Number(measured) : 0, 0, 1)
+    const suppliedDepth = options.queueDepth ? options.queueDepth[componentId] ?? options.queueDepth[key] : undefined
     const stats = {
       componentId,
       component: key,
       avgWait,
       avgProcessing,
       waitRatio,
-      queueDepthMax: depths.get(key) || 0,
+      // The engine's queueLengthMax is the true depth. A per-case reconstruction
+      // can only ever see 0 or 1, because QUEUE_ENTER and QUEUE_EXIT are logged
+      // at the same instant whenever a server slot is already free.
+      queueDepthMax: suppliedDepth != null ? Number(suppliedDepth) : depths.get(key) || 0,
       visits: visitsCount,
       utilisation,
       derived: measured == null,
@@ -469,6 +486,24 @@ function buildBottlenecks(records, options) {
 
 function variantKey(path) {
   return path.join(' > ')
+}
+
+// Utilisation and true queue depth cannot be recovered from an event log prefix.
+// The engine already measures both per component, so hand them over as options
+// and the miner can rank bottlenecks on real evidence.
+export function miningOptions(sim) {
+  const components = sim?.components && typeof sim.components === 'object' ? sim.components : null
+  if (!components) return {}
+  const utilization = {}
+  const queueDepth = {}
+  for (const [id, c] of Object.entries(components)) {
+    if (!c || typeof c !== 'object') continue
+    const util = Number(c.utilization)
+    utilization[id] = Number.isFinite(util) ? clamp(util, 0, 1) : 0
+    const depth = Number(c.queueLengthMax)
+    queueDepth[id] = Number.isFinite(depth) ? depth : 0
+  }
+  return { utilization, queueDepth }
 }
 
 export function mineEventLog(eventLog, contract, options) {

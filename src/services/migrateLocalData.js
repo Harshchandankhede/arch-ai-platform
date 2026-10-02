@@ -1,7 +1,8 @@
 import { createProject, listProjects } from './projects.js'
 import { STORAGE_KEY } from '../store/reducer.js'
 
-const MIGRATED_KEY = 'archai.migrated.v1'
+// Cleared on sign-out so a different account gets its own migration pass.
+export const MIGRATED_KEY = 'archai.migrated.v1'
 
 export function hasMigrated() {
   try {
@@ -42,6 +43,9 @@ export async function migrateLocalProjects() {
   let migrated = 0
 
   for (const project of locals) {
+    // Stop on the first authentication failure. Continuing would fire one
+    // guaranteed-401 POST per remaining project after the session is already dead.
+    if (err.status === 401 || err.status === 403) return { migrated, skipped: false, unauthorized: true }
     try {
       await createProject({
         name: project.name,
@@ -49,16 +53,21 @@ export async function migrateLocalProjects() {
         arch: project.arch,
       })
       migrated += 1
-    } catch {
+    } catch (err) {
       // skip anything the API rejects; never block sign-in
+      if (err.status === 401 || err.status === 403) return { migrated, skipped: false, unauthorized: true }
     }
   }
 
   if (migrated > 0) clearLocalProjects()
-  try {
-    localStorage.setItem(MIGRATED_KEY, '1')
-  } catch {
-    // ignore
+  // Only mark migration complete when it actually ran. Setting this flag after a
+  // total failure would strand the local projects on disk with no way to retry them.
+  if (locals.length === 0 || migrated > 0) {
+    try {
+      localStorage.setItem(MIGRATED_KEY, '1')
+    } catch {
+      // ignore
+    }
   }
 
   return { migrated, skipped: false }
@@ -69,7 +78,10 @@ export async function fetchProjectsWithFallback() {
   try {
     const projects = await listProjects()
     return { projects, source: 'server' }
-  } catch {
+  } catch (err) {
+    // A 401 is an authentication outcome, not a connectivity problem. Falling back to
+    // local projects here would mask the expiry and leave stale seed ids in place.
+    if (err.status === 401 || err.status === 403) return { projects: null, source: 'unauthorized' }
     return { projects: local, source: 'local' }
   }
 }

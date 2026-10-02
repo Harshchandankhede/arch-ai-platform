@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { useApp } from '../store/AppContext.jsx'
 import { useResults } from '../store/useResults.js'
+import { utilPct } from '../lib/metrics.js'
 import {
   Badge,
   Button,
@@ -229,7 +230,7 @@ export default function Dashboard() {
             topBottlenecks.map((b, i) => {
               const name = b?.component || b?.nodeId || `Component ${i + 1}`
               const entry = componentByName.get(name) || null
-              const util = Number(entry?.utilization)
+              const util = utilPct(entry?.utilization)
               const waiting = Number(b?.waitingMs) || 0
               const processing = Number(b?.processingMs) || 0
               const total = waiting + processing

@@ -16,6 +16,15 @@ export function clamp(value, min, max) {
   return value
 }
 
+// The engine reports component `utilization` as a busy-time ratio (0-1), while every
+// UI surface — UtilBar widths, "% util" labels, utilizationColor thresholds — expects a
+// 0-100 percentage. Reading the ratio as a percentage rendered 5.1% as "0.1%".
+export function utilPct(utilization) {
+  const n = Number(utilization)
+  if (!Number.isFinite(n)) return 0
+  return clamp(n > 1 ? n : n * 100, 0, 100)
+}
+
 export function positiveNumber(value, fallback) {
   if (!Number.isFinite(value) || value <= 0) return fallback
   return value

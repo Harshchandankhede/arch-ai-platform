@@ -20,7 +20,10 @@ Implemented so far:
 - **Project CRUD** — five routes under `/api/projects`, all behind `requireAuth`, with per-user ownership enforced in the service layer
 - **Project model** with a nested `arch` document (`nodes[]` and `edges[]`), a `currentVersion` counter, and an index on `{ owner, updatedAt }`
 
-**Not yet implemented** (later phases): architecture save/load, simulation, process mining, evaluation, AI recommendations, reports, interview.
+- **Architecture version history** — six nested routes under `/api/projects/:projectId/versions` for save, list, read, rename, restore and delete, with `currentVersion` maintained on the project
+
+**Not yet implemented** (later phases): simulation results persistence, AI model integration,
+and the reports/interview features, which currently run entirely in the browser.
 
 ## Prerequisites
 
@@ -278,9 +281,14 @@ Violations return `400` in the shared error format. `PUT` runs Mongoose validato
 |---|---|
 | Authentication | **Wired** — frontend registers/logs in against these endpoints |
 | Projects | **Wired** — the five `/api/projects` routes are live and owner-scoped |
-| Architecture save/load | `localStorage` — no API yet; `arch` is stored inline on the project document |
-| Architecture version history | `localStorage` — no API yet; the backend keeps `currentVersion` but never increments it |
-| Simulation, mining, evaluation, AI, reports, interview | `localStorage` / in-browser — no API yet |
+| Architecture save/load | **Wired** — `arch` is stored inline on the project document; `PUT /api/projects/:id` writes it |
+| Architecture version history | **Wired** — six nested `/versions` routes, owner-scoped, `currentVersion` is incremented |
+| Simulation, mining, evaluation, reports, interview | Browser only — no API, results are not persisted |
+| AI recommendations | Browser only — deterministic rules, no model is called |
+
+The backend has no test suite and no `test` or `lint` script. The pipeline tests live in the
+frontend package and run against the pure `src/lib/` modules, which have no browser or
+Node-specific dependencies.
 
 ## Inspecting the database
 

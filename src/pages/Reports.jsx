@@ -4,6 +4,7 @@ import { FileText, Info, Printer } from 'lucide-react'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
 import { useResults } from '../store/useResults.js'
 import { toContract } from '../lib/contract.js'
+import { utilPct } from '../lib/metrics.js'
 import { nodeTypes } from '../data/nodeTypes.js'
 import { categoryColor, colors, scoreColor, utilizationColor } from '../theme/tokens.js'
 import { NodeGlyph, boundsOf } from '../components/NodeShapes.jsx'
@@ -118,13 +119,13 @@ function ReportDiagram({ arch, components, height = 260 }) {
         const stat = stats[n.id]
         const measured = Boolean(stat)
         const color = measured
-          ? utilizationColor(Number(stat.utilization) || 0)
+          ? utilizationColor(utilPct(stat.utilization))
           : categoryColor[type?.cat] || colors.inkDim
         return (
           <g key={n.id} transform={`translate(${b.x}, ${b.y})`}>
             <NodeGlyph
               name={n.name || type?.name || n.id}
-              sub={measured ? `${Math.round(Number(stat.utilization) || 0)}%` : n.type}
+              sub={measured ? `${Math.round(utilPct(stat.utilization))}%` : n.type}
               shape={type?.shape}
               color={color}
             />
