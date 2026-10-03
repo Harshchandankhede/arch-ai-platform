@@ -17,7 +17,7 @@ so a design can be validated *before* any code is written.
 | Process mining | Browser | conformance + bottleneck detection |
 | Health score evaluation | Browser | six weighted dimensions |
 | AI recommendations | Browser | **deterministic rules** — no model wired up yet |
-| Interview scoring | Browser | **keyword matching** against a 14-question bank |
+| Interview scoring | Browser | **keyword matching** against a 15-question bank |
 
 Simulation results are recomputed in the browser and held in an in-memory cache keyed by
 architecture hash and workload; they are **not persisted**, so a page reload discards them.
@@ -44,7 +44,7 @@ bottleneck rather than inventing one.
 
 **Frontend** — React 19, Vite 8, Tailwind 4, React Router, Recharts, Three.js, Oxlint
 **Backend** — Node.js, Express 5, Mongoose 9, MongoDB Atlas, JWT, bcrypt
-**Linting** — Oxlint, both packages
+**Linting** — Oxlint (frontend only; the backend defines no lint script)
 
 ## Getting started
 
@@ -83,11 +83,59 @@ Runs on `http://localhost:5173`. Point it at the API with `VITE_API_BASE_URL`
 | `npm run dev` | both | Start the dev server |
 | `npm run build` | frontend | Production build to `dist/` |
 | `npm run lint` | frontend | Oxlint |
-| `npm test` | frontend | Pipeline test suite (Node's built-in runner, no dependencies) |
+| `npm test` | frontend | Test suite (Node's built-in runner, no dependencies) |
+| `npm run preview` | frontend | Serve the production build locally |
 
-`npm test` covers the simulation → mining → evaluation → recommendations pipeline: engine
-determinism and capacity, conformance and bottleneck detection, dimension calibration,
-score ordering across architectures, and health-score monotonicity under rising load.
+The backend defines only `npm start` and `npm run dev`; it has no build, lint or test
+script, and no test framework is installed.
+
+`npm test` covers:
+
+| Suite | Guards against |
+| --- | --- |
+| `pipeline.test.js` | Engine determinism and capacity, conformance, bottleneck detection, dimension calibration, health-score monotonicity under load |
+| `request-flow.test.js` | Trajectory reconstruction, per-edge traffic, outcome classification, replay-window selection |
+| `capacity.test.js` | Ceiling honesty — the reported rate must survive re-running the engine at it |
+| `auth.test.js` | Auth/token desync, the 401 request loop, session invalidation, secret leakage in errors |
+| `migration.test.js` | Local-project migration not throwing, and not marking itself complete on failure |
+| `trigger.test.js` | Simulation starts only on click; worker lifetime; UI states |
+| `simulation-ui.test.js` | Utilisation unit conversion (the engine reports a 0–1 ratio, the UI shows a percentage) |
+
+Several suites assert on source text rather than runtime behaviour, which catches
+regressions in wiring but not runtime-only failures.
+
+### Live request flow
+
+The Simulation page replays the completed run on the 2D diagram. Nothing about the motion
+is decorative:
+
+- **Trajectories** (`lib/trajectories.js`) reconstruct one path per request from the event
+  log, recording the measured enter/exit timestamp of every hop.
+- **Connection flow** — each edge's dashes advance in proportion to the traffic that
+  connection actually carried, counted from real request paths.
+- **Request dots** — positioned by interpolating the real hop timings, coloured by outcome
+  (completed, retried, failed, dropped).
+- **Node cards** show measured utilisation, with an alert marker above 85%.
+- **Speed** is user-controlled (0.02×–2×); the replay window rescales with speed so one
+  loop always takes the same wall-clock time.
+- **Continuous playback** — the loop wraps where traffic is thinnest and fades at the edges,
+  so traffic never visibly jumps backwards.
+
+Only the 400 logged cases animate. That is the same deterministic sample process mining
+consumes, so the flow and the conformance analysis stay consistent.
+
+### Capacity analysis
+
+`lib/capacity.js` sweeps the DES engine upward until the design breaks, then reports the
+sustainable arrival rate, the estimated concurrent-user count via Little's Law, the
+component that caps the design, and whether the current load is sustainable, at risk, over
+capacity, or simply underused. A rate counts as sustainable when it serves every request it
+accepts without dropping any and keeps p95 inside the latency budget.
+
+The sweep runs on its own Web Worker so it can never delay Start Simulation. The ceiling is
+searched up to 6,000 req/s; a design still healthy at that point is reported as a lower
+bound rather than given a false exact number. The reported figure is only meaningful for
+the probe duration it was measured at, which is returned as `probeDuration`.
 
 ### Simulation is started by the user
 
@@ -104,13 +152,15 @@ discards the result — it is written to the store and picked up by the next pag
 
 ```
 src/
-  lib/          engine, mining, evaluation, metrics, contract, rng
+  lib/          engine, mining, evaluation, recommendations, capacity,
+                trajectories, metrics, contract, rng, eventQueue, validate
   features/     simulation worker, three.js scenes
-  services/     API clients (api, auth, projects, architectures, ai)
+  services/     API clients (api, auth, projects, architectures, migrateLocalData)
   store/        reducer, context, useResults
   pages/        Builder, Simulation, ProcessMining, Evaluation, ...
-  components/   UI primitives, charts, node shapes
-  data/         node types, question bank, seed architectures
+  components/   UI primitives, charts, node shapes, ArchitectureFlow
+  data/         node types, seed architectures, question bank
+tests/          pipeline, auth, capacity, request-flow, trigger, migration, UI
 backend/src/
   models/       User, Project, ArchitectureVersion, shared architecture schema
   services/     auth, project, architecture

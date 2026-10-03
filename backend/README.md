@@ -252,7 +252,7 @@ A project is the container a student works in: a name, an optional description, 
 }
 ```
 
-`position` defaults to `{ x: 0, y: 0 }`, `parameters` to `{}` (free-form JSON — `Schema.Types.Mixed`), and both arrays to `[]`. Every `edge` needs an `id`, a `source` and a `target`. `currentVersion` is stored and defaults to `0`, but nothing in the backend increments it yet — version history is a later phase. Nested sub-documents carry no `_id` of their own, and the schema sets `versionKey: false`, so there is no `__v` either. A `{ owner: 1, updatedAt: -1 }` index backs the list query.
+`position` defaults to `{ x: 0, y: 0 }`, `parameters` to `{}` (free-form JSON — `Schema.Types.Mixed`), and both arrays to `[]`. Every `edge` needs an `id`, a `source` and a `target`. `currentVersion` is stored and defaults to `0`; it is maintained by the version routes — incremented on snapshot create (`architecture.service.js:114`), re-pointed when the current version is deleted, and set on restore. Nested sub-documents carry no `_id` of their own, and the schema sets `versionKey: false`, so there is no `__v` either. A `{ owner: 1, updatedAt: -1 }` index backs the list query.
 
 Responses use the shared envelope: `{ "success": true, "data": { "project": … } }`. The list route returns `{ "success": true, "data": { "projects": [ … ] } }`, and delete returns `{ "success": true, "data": { "id": "…", "name": "…" } }`.
 

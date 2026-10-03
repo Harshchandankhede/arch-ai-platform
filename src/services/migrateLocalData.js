@@ -43,9 +43,6 @@ export async function migrateLocalProjects() {
   let migrated = 0
 
   for (const project of locals) {
-    // Stop on the first authentication failure. Continuing would fire one
-    // guaranteed-401 POST per remaining project after the session is already dead.
-    if (err.status === 401 || err.status === 403) return { migrated, skipped: false, unauthorized: true }
     try {
       await createProject({
         name: project.name,
@@ -54,8 +51,10 @@ export async function migrateLocalProjects() {
       })
       migrated += 1
     } catch (err) {
-      // skip anything the API rejects; never block sign-in
+      // Stop on the first authentication failure. Continuing would fire one
+      // guaranteed-401 POST per remaining project after the session is already dead.
       if (err.status === 401 || err.status === 403) return { migrated, skipped: false, unauthorized: true }
+      // Any other failure is skipped so one bad project cannot block sign-in.
     }
   }
 
