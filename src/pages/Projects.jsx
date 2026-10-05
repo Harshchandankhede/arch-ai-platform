@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Copy, FolderKanban, Play, Plus, Trash2, Workflow, X } from 'lucide-react'
 import {
@@ -12,9 +12,7 @@ import {
   inputClass,
 } from '../components/ui.jsx'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
-import { makeId } from '../store/reducer.js'
-import { cloneArchitecture } from '../data/seedArchitectures.js'
-import { createProject, templates } from '../services/projects.js'
+import { createProject, deleteProject, templates } from '../services/projects.js'
 
 const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
 
@@ -69,6 +67,63 @@ export default function Projects() {
   const [templateKey, setTemplateKey] = useState('starter')
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState('')
+  const [busyIds, setBusyIds] = useState(() => new Set())
+
+  const markBusy = useCallback((id, on) => {
+    setBusyIds((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
+  // Duplicate and Delete now go through the server rather than editing the reducer alone.
+  //
+  // Both previously dispatched locally, which made them look like they worked while
+  // changing nothing on disk: projects are server-owned and are not written to
+  // localStorage, so the row vanished on reload. The architecture is sent to POST rather
+  // than read back from the source project, which keeps the copy independent.
+  const onDuplicate = useCallback(
+    async (project) => {
+      markBusy(project.id, true)
+      try {
+        const copy = await createProject({
+          name: nextVersionName(project.name, visibleProjects),
+          description: project.description || '',
+          templateKey: 'blank',
+          arch: project.arch,
+        })
+        dispatch({ type: 'CREATE_PROJECT', project: copy })
+        notify(`Created “${copy.name}” as a new version`)
+      } catch (err) {
+        notify(err?.message || 'Could not duplicate that project.', 'error')
+      } finally {
+        markBusy(project.id, false)
+      }
+    },
+    [dispatch, markBusy, notify, visibleProjects],
+  )
+
+  const onDelete = useCallback(
+    async (project) => {
+      const ok = window.confirm(
+        `Delete “${project.name}”? This permanently removes the project and its saved architectures.`,
+      )
+      if (!ok) return
+      markBusy(project.id, true)
+      try {
+        await deleteProject({ id: project.id })
+        dispatch({ type: 'DELETE_PROJECT', id: project.id })
+        notify(`Deleted “${project.name}”`)
+      } catch (err) {
+        notify(err?.message || 'Could not delete that project.', 'error')
+      } finally {
+        markBusy(project.id, false)
+      }
+    },
+    [dispatch, markBusy, notify],
+  )
 
   const rows = useMemo(() => {
     const list = visibleProjects
@@ -109,17 +164,8 @@ export default function Projects() {
             <Button
               size="sm"
               icon={<Copy size={13} />}
-              onClick={() => {
-                const copy = {
-                  id: makeId('p'),
-                  name: nextVersionName(project.name, visibleProjects),
-                  description: project.description || '',
-                  updatedAt: Date.now(),
-                  arch: cloneArchitecture(project.arch),
-                }
-                dispatch({ type: 'CREATE_PROJECT', project: copy })
-                notify(`Created “${copy.name}” as a new version`)
-              }}
+              disabled={busyIds.has(project.id)}
+              onClick={() => onDuplicate(project)}
             >
               Duplicate
             </Button>
@@ -127,14 +173,8 @@ export default function Projects() {
               size="sm"
               variant="danger"
               icon={<Trash2 size={13} />}
-              onClick={() => {
-                const ok = window.confirm(
-                  `Delete “${project.name}”? This removes the project and its cached results from this browser.`,
-                )
-                if (!ok) return
-                dispatch({ type: 'DELETE_PROJECT', id: project.id })
-                notify(`Deleted “${project.name}”`)
-              }}
+              disabled={busyIds.has(project.id)}
+              onClick={() => onDelete(project)}
             >
               Delete
             </Button>
@@ -142,7 +182,7 @@ export default function Projects() {
         ],
       }
     })
-  }, [visibleProjects, currentProjectId, dispatch, navigate, notify])
+  }, [visibleProjects, currentProjectId, dispatch, navigate, onDuplicate, onDelete])
 
   async function onCreate(event) {
     event.preventDefault()

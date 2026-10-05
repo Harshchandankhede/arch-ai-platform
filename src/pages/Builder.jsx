@@ -50,8 +50,9 @@ import { canSimulate, validateArchitecture } from '../lib/validate.js'
 import { Badge, Button, Empty, Field, JsonPreview, PageHead, Spinner, inputClass } from '../components/ui.jsx'
 import { NODE_H, NODE_W, NodeGlyph } from '../components/NodeShapes.jsx'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
+import { createProjectArchWriter } from '../lib/archWriter.js'
 import { categoryColor, colors, withAlpha } from '../theme/tokens.js'
-import { templates, isServerProjectId } from '../services/projects.js'
+import { templates, isServerProjectId, updateProject } from '../services/projects.js'
 import { createVersion, deleteVersion, listVersions, renameVersion, restoreVersion } from '../services/architectures.js'
 
 const DND_MIME = 'application/arch-ai-node'
@@ -659,6 +660,29 @@ export default function Builder() {
   const liveRef = useRef({ nodes, edges })
   const versionsProjectRef = useRef(null)
 
+  // One writer for the lifetime of the page, so the in-flight/queued state it holds is
+  // shared by every save rather than being reset whenever the debounce effect re-runs.
+  const writeArchRef = useRef(null)
+  if (writeArchRef.current === null) {
+    writeArchRef.current = createProjectArchWriter({
+      // Short ids ("p1") belong to seed/local projects that no route can resolve, so a
+      // PUT would be a guaranteed 404. Those projects are not server-backed at all.
+      canWrite: isServerProjectId,
+      update: ({ id, patch }) => updateProject({ id, patch }),
+      onError: (err) => {
+        const message =
+          err?.status === 0 || err?.message === 'Network Error'
+            ? 'Could not reach the server — your latest canvas changes are not saved.'
+            : 'Autosave failed — your latest canvas changes may not be saved.'
+        notifyRef.current?.(message, 'error')
+      },
+    })
+  }
+  const notifyRef = useRef(notify)
+  useEffect(() => {
+    notifyRef.current = notify
+  }, [notify])
+
   useEffect(() => {
     liveRef.current = { nodes, edges }
   })
@@ -687,6 +711,12 @@ export default function Builder() {
     setResult(validateArchitecture(toArch(liveRef.current)))
   }, [structureKey])
 
+  // Persist to the server, not just to the reducer.
+  //
+  // This previously only dispatched SET_ARCH, which updated the in-memory store. Because
+  // projects are no longer written to localStorage, that was the ONLY thing that happened:
+  // every canvas edit was discarded on reload, and also on any other device or browser.
+  // updateProject() existed in the service layer but was never called from anywhere.
   useEffect(() => {
     if (!currentProject) return
     const arch = toArch({ nodes, edges })
@@ -697,10 +727,14 @@ export default function Builder() {
       savedRef.current = key
       pendingRef.current = null
       dispatch({ type: 'SET_ARCH', projectId: currentProject.id, arch })
+      // Non-server project ids (seed/local projects) resolve to no route, so skip the PUT.
+      writeArchRef.current(currentProject.id, arch)
     }, SAVE_DEBOUNCE)
     return () => clearTimeout(timer)
   }, [nodes, edges, currentProject, dispatch])
 
+  // Flush on unmount. An in-flight request is intentionally not awaited: React offers no
+  // synchronous way to do so, and aborting here would drop the user's last edits.
   useEffect(
     () => () => {
       const pending = pendingRef.current
@@ -708,6 +742,7 @@ export default function Builder() {
       pendingRef.current = null
       savedRef.current = `${pending.projectId}:${archHash(pending.arch)}`
       dispatch({ type: 'SET_ARCH', projectId: pending.projectId, arch: pending.arch })
+      writeArchRef.current(pending.projectId, pending.arch)
     },
     [dispatch],
   )
@@ -993,6 +1028,9 @@ export default function Builder() {
         pendingRef.current = null
         savedRef.current = `${projectId}:${archHash(next)}`
         dispatch({ type: 'SET_ARCH', projectId, arch: next })
+        // Restoring a version is a canvas edit like any other: without this the server keeps
+        // the architecture that was open before, and the restore is lost on reload.
+        writeArchRef.current(projectId, next)
         notify('Version restored — the canvas now matches that snapshot')
         await refreshVersions()
       } catch (err) {
