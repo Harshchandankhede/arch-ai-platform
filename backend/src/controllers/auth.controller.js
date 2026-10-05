@@ -1,4 +1,4 @@
-import { getUserById, login, register } from '../services/auth.service.js'
+import { getUserById, login, register, updateReportProfile } from '../services/auth.service.js'
 
 export async function registerUser(req, res) {
   const { name, email, password, role } = req.body || {}
@@ -14,5 +14,17 @@ export async function loginUser(req, res) {
 
 export async function getCurrentUser(req, res) {
   const user = await getUserById(req.user.id)
+  res.status(200).json({ success: true, data: { user } })
+}
+
+/**
+ * Updates the report profile only.
+ *
+ * `req.user.id` comes from the verified JWT, not from the request body, so one account
+ * can never write a profile onto another.
+ */
+export async function updateMyReportProfile(req, res) {
+  const { displayName, affiliation } = req.body || {}
+  const user = await updateReportProfile(req.user.id, { displayName, affiliation })
   res.status(200).json({ success: true, data: { user } })
 }

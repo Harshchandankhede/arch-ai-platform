@@ -65,14 +65,20 @@ export function Badge({ tone = 'dim', children, className = '' }) {
   )
 }
 
-export function Field({ label, hint, children, className = '' }) {
+export function Field({ label, hint, error, children, className = '' }) {
   return (
     <div className={`mb-3.5 ${className}`}>
       {label && (
         <label className="mb-1.5 block font-mono text-[11.5px] tracking-wide text-ink-dim uppercase">{label}</label>
       )}
       {children}
-      {hint && <div className="mt-1 text-[11px] text-ink-faint">{hint}</div>}
+      {/* An error takes priority over the hint: showing both would bury the reason the
+          save was rejected underneath advisory text. */}
+      {error ? (
+        <div className="mt-1 text-[11px] text-red">{error}</div>
+      ) : (
+        hint && <div className="mt-1 text-[11px] text-ink-faint">{hint}</div>
+      )}
     </div>
   )
 }

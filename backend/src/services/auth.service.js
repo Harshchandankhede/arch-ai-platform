@@ -16,6 +16,12 @@ function toPublicUser(user) {
     name: user.name,
     email: user.email,
     role: user.role,
+    // Report profile, defaulted from the login identity so a report is never attributed
+    // to a blank author just because the profile has not been filled in yet.
+    reportProfile: {
+      displayName: user.displayName || user.name || '',
+      affiliation: user.affiliation || '',
+    },
   }
 }
 
@@ -85,5 +91,42 @@ export async function login({ email, password }) {
 export async function getUserById(id) {
   const user = await User.findById(id)
   if (!user) throw new ApiError(404, 'User not found.')
+  return toPublicUser(user)
+}
+
+/**
+ * Validates the editable report profile.
+ *
+ * The login identity is intentionally absent from this payload. There is no branch here
+ * that can touch `email`, `name` or `role`, so a Settings save cannot change how the
+ * account signs in or which account it belongs to.
+ */
+export function validateReportProfile({ displayName, affiliation }) {
+  const errors = {}
+
+  const name = String(displayName ?? '').trim()
+  if (!name) errors.displayName = 'Display name is required.'
+  else if (name.length < 2) errors.displayName = 'Display name must be at least 2 characters.'
+  else if (name.length > 80) errors.displayName = 'Display name must be at most 80 characters.'
+
+  const org = String(affiliation ?? '').trim()
+  if (org.length > 120) errors.affiliation = 'Affiliation must be at most 120 characters.'
+
+  return { valid: Object.keys(errors).length === 0, errors }
+}
+
+export async function updateReportProfile(id, { displayName, affiliation }) {
+  const { valid, errors } = validateReportProfile({ displayName, affiliation })
+  if (!valid) throw new ApiError(400, 'Validation failed', errors)
+
+  // Whitelisted update: only the two report fields are named here, so any extra key a
+  // client sends is discarded rather than written.
+  const user = await User.findByIdAndUpdate(
+    id,
+    { $set: { displayName: String(displayName).trim(), affiliation: String(affiliation ?? '').trim() } },
+    { new: true, runValidators: true },
+  )
+  if (!user) throw new ApiError(404, 'User not found.')
+
   return toPublicUser(user)
 }

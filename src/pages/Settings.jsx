@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Database, LogOut, Moon, RotateCcw, ShieldAlert, User } from 'lucide-react'
+import { Database, LogOut, Mail, Moon, RotateCcw, ShieldAlert, ShieldCheck, User } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -13,27 +13,65 @@ import {
 import { useApp, useDispatch } from '../store/AppContext.jsx'
 import { defaultSettings } from '../store/reducer.js'
 import { clearUserState, userStorageKey } from '../store/storage.js'
-import { logout } from '../services/auth.js'
+import { logout, saveReportProfile } from '../services/auth.js'
 
 export default function Settings() {
   const { user, settings, workload, notify } = useApp()
   const dispatch = useDispatch()
   const navigate = useNavigate()
 
-  const [name, setName] = useState(settings?.name || user?.name || '')
-  const [email, setEmail] = useState(settings?.email || user?.email || '')
+  // The report profile is server-owned, so it is seeded from the account and re-seeded
+  // whenever a new account is signed in. Local state is only ever a draft: it is not the
+  // source of truth and nothing here writes it to storage.
+  const serverProfile = user?.reportProfile || {}
+  const [displayName, setDisplayName] = useState(serverProfile.displayName || user?.name || '')
+  const [affiliation, setAffiliation] = useState(serverProfile.affiliation || '')
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [saving, setSaving] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
+
+  // Switching accounts must not carry the previous account's draft into the form.
+  useEffect(() => {
+    setDisplayName(serverProfile.displayName || user?.name || '')
+    setAffiliation(serverProfile.affiliation || '')
+    setFieldErrors({})
+  }, [user?.id])
 
   const threshold = Number(settings?.alertThreshold ?? defaultSettings.alertThreshold)
   const arrivalRate = Number(workload?.arrivalRate ?? 120)
 
-  function saveProfile(event) {
+  async function saveProfile(event) {
     event.preventDefault()
-    dispatch({
-      type: 'SET_SETTINGS',
-      settings: { name: name.trim(), email: email.trim() },
-    })
-    notify('Profile saved')
+    if (saving) return
+    setSaving(true)
+    setFieldErrors({})
+    try {
+      const updated = await saveReportProfile({ displayName, affiliation })
+      // Adopt the server's normalised values rather than the raw draft, so the form cannot
+      // keep showing whitespace or casing the database did not accept.
+      setDisplayName(updated?.reportProfile?.displayName ?? displayName.trim())
+      setAffiliation(updated?.reportProfile?.affiliation ?? affiliation.trim())
+      dispatch({
+        type: 'SET_PROFILE',
+        settings: {
+          name: updated?.reportProfile?.displayName ?? displayName.trim(),
+          affiliation: updated?.reportProfile?.affiliation ?? '',
+        },
+      })
+      notify('Report profile saved')
+    } catch (err) {
+      // Field-level messages from the server are shown inline under the offending input;
+      // anything else (network, 500) falls back to a single toast.
+      const details = err?.details
+      if (details && typeof details === 'object') {
+        setFieldErrors(details)
+        notify('Check the highlighted fields', 'error')
+      } else {
+        notify(err?.message || 'Could not save the report profile.', 'error')
+      }
+    } finally {
+      setSaving(false)
+    }
   }
 
   function onThreshold(event) {
@@ -76,45 +114,71 @@ export default function Settings() {
       />
 
       <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
-        <Card title="Profile" sub="Shown on exported reports" className="xl:col-span-2">
-          <form onSubmit={saveProfile}>
-            <div className="grid grid-cols-1 gap-x-4 md:grid-cols-3">
-              <Field label="Full name">
+        <Card title="Report profile" sub="How you are credited on exported reports. Saved to your account." className="xl:col-span-2">
+          <form onSubmit={saveProfile} noValidate>
+            <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+              <Field label="Display name" error={fieldErrors.displayName}>
                 <input
                   className={inputClass}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="Aditi Sharma"
+                  aria-invalid={Boolean(fieldErrors.displayName)}
+                  maxLength={80}
                 />
               </Field>
-              <Field label="Email">
+              <Field
+                label="Affiliation"
+                error={fieldErrors.affiliation}
+                hint="Institution, department or team shown beside your name."
+              >
                 <input
                   className={inputClass}
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@student.edu"
+                  value={affiliation}
+                  onChange={(e) => setAffiliation(e.target.value)}
+                  placeholder="Department of Computer Science, MIT"
+                  aria-invalid={Boolean(fieldErrors.affiliation)}
+                  maxLength={120}
                 />
-              </Field>
-              <Field label="Role" hint="Assigned by this build, not editable.">
-                <div className="flex h-[38px] items-center gap-2 rounded-[7px] border border-line bg-overlay px-3">
-                  <User size={14} className="shrink-0 text-ink-faint" />
-                  <span className="font-mono text-[13px] text-ink-dim">{user?.role || 'Student'}</span>
-                </div>
               </Field>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Button type="submit" variant="primary">
-                Save changes
+            <div className="mt-4 flex flex-wrap items-center gap-2.5">
+              <Button type="submit" variant="primary" disabled={saving}>
+                {saving ? 'Saving…' : 'Save report profile'}
               </Button>
-              {user?.email && (
-                <span className="font-mono text-[11.5px] text-ink-faint">
-                  Signed in as {user.email}
-                </span>
-              )}
+              <span className="font-mono text-[11.5px] text-ink-faint">
+                Stored on your account — visible on any device you sign in from.
+              </span>
             </div>
           </form>
+        </Card>
+
+        <Card title="Account" sub="Your sign-in identity. Not editable here." className="xl:col-span-2">
+          <div className="grid grid-cols-1 gap-x-4 md:grid-cols-3">
+            <Field label="Login name" hint="Set at registration.">
+              <div className="flex h-[38px] items-center gap-2 rounded-[7px] border border-line bg-overlay px-3">
+                <User size={14} className="shrink-0 text-ink-faint" />
+                <span className="truncate font-mono text-[13px] text-ink-dim">
+                  {user?.name || '—'}
+                </span>
+              </div>
+            </Field>
+            <Field label="Login email" hint="Changing this requires re-registering; the report profile above cannot alter it.">
+              <div className="flex h-[38px] items-center gap-2 overflow-hidden rounded-[7px] border border-line bg-overlay px-3">
+                <Mail size={14} className="shrink-0 text-ink-faint" />
+                <span className="truncate font-mono text-[13px] text-ink-dim">
+                  {user?.email || '—'}
+                </span>
+              </div>
+            </Field>
+            <Field label="Role" hint="Assigned by this build, not editable.">
+              <div className="flex h-[38px] items-center gap-2 rounded-[7px] border border-line bg-overlay px-3">
+                <ShieldCheck size={14} className="shrink-0 text-ink-faint" />
+                <span className="font-mono text-[13px] text-ink-dim">{user?.role || 'Student'}</span>
+              </div>
+            </Field>
+          </div>
         </Card>
 
         <Card title="Preferences" sub="Defaults applied to new simulation runs">
