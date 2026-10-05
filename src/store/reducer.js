@@ -1,6 +1,4 @@
-import { seedProjects } from '../data/seedArchitectures.js'
-
-export const STORAGE_KEY = 'archai.state.v1'
+import { readUserState } from './storage.js'
 
 export const workloadPresets = [
   { label: '100 concurrent users', concurrentUsers: 100 },
@@ -18,58 +16,59 @@ export const defaultWorkload = {
 
 export const defaultSettings = {
   alertThreshold: 60,
-  name: 'Aditi Sharma',
-  email: 'aditi.sharma@student.edu',
+  name: '',
+  email: '',
 }
 
 export const initialState = {
-  auth: { user: null, demoMode: true },
+  // `checked` records that the stored token has already been verified. Auth itself is not
+  // persisted, so after a reload `user` is null while a perfectly valid token is still in
+  // localStorage. Without this flag the route guard had no way to tell "not signed in" from
+  // "not looked yet", so it treated every reload as signed out and redirected to /login.
+  auth: { user: null, demoMode: true, checked: false },
+  // Projects are server-owned and arrive per signed-in user via HYDRATE_PROJECTS.
+  // They start empty on every boot: seeding demo projects here handed every new account
+  // a shared project list that looked like their own work.
   projects: [],
+  // The user id that `projects` was loaded for. The UI refuses to render project data
+  // unless this matches the signed-in user, so a late response from a previous session
+  // cannot paint over the current account.
+  projectsOwnerId: null,
   currentProjectId: null,
+  hydrated: false,
   workload: defaultWorkload,
   simCache: {},
   interview: { history: [], log: [], index: 0 },
   settings: defaultSettings,
+  // In-memory only, and deliberately not persisted: a notification about a run that
+  // finished yesterday is noise, not information.
+  notifications: [],
   toast: null,
 }
 
 export function initFromStorage() {
-  if (typeof localStorage === 'undefined') return initialState
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { ...initialState, projects: seedProjects(), currentProjectId: 'p1' }
-    const parsed = JSON.parse(raw)
-    const projects = Array.isArray(parsed.projects) && parsed.projects.length ? parsed.projects : seedProjects()
-    const currentProjectId =
-      parsed.currentProjectId && projects.some((p) => p.id === parsed.currentProjectId)
-        ? parsed.currentProjectId
-        : projects[0].id
-    return {
-      ...initialState,
-      // Never restore auth from storage. A persisted user with no valid token is what
-      // produced the endless 401 loop; the session is re-established by LOGIN or by
-      // the startup token check in AppContext.
-      auth: initialState.auth,
-      projects,
-      currentProjectId,
-      workload: { ...defaultWorkload, ...(parsed.workload || {}) },
-      interview: { ...initialState.interview, ...(parsed.interview || {}) },
-      settings: { ...defaultSettings, ...(parsed.settings || {}) },
-    }
-  } catch {
-    return { ...initialState, projects: seedProjects(), currentProjectId: 'p1' }
+  // No storage read at boot. Which account's preferences to restore is unknown until the
+  // token has been verified, so preferences are applied by LOAD_PREFS once /auth/me
+  // returns. Projects are never restored from storage under any circumstances.
+  return initialState
+}
+
+export function loadPrefsFor(userId) {
+  const stored = readUserState(userId)
+  if (!stored) return null
+  return {
+    workload: { ...defaultWorkload, ...(stored.workload || {}) },
+    interview: { ...initialState.interview, ...(stored.interview || {}) },
+    settings: { ...defaultSettings, ...(stored.settings || {}) },
   }
 }
 
 export function persistable(state) {
-  // `auth` is deliberately NOT persisted. The JWT lives in its own localStorage key
-  // (`archai.token`), so writing the user here created two sources of truth: a reload
-  // restored auth.user while the token had expired or been cleared by the 401
-  // interceptor, leaving the app "signed in" with no Authorization header, which made
-  // every protected request 401. Auth is re-derived from the token at startup instead.
+  // Projects and currentProjectId are intentionally absent: they are owned data and are
+  // re-read from the API for the signed-in user on every load. `auth` is not persisted
+  // either — the JWT in `archai.token` is the only session source of truth, so a reload
+  // restores the session via /auth/me instead of a cached user object.
   return {
-    projects: state.projects,
-    currentProjectId: state.currentProjectId,
     workload: state.workload,
     interview: state.interview,
     settings: state.settings,
@@ -77,6 +76,10 @@ export function persistable(state) {
 }
 
 let uid = 0
+
+// Notifications are session-scoped, so a bounded cap is enough to stop an unbounded list.
+const NOTIFICATION_LIMIT = 40
+
 export function makeId(prefix) {
   uid += 1
   return `${prefix}-${Date.now().toString(36)}-${uid}`
@@ -102,11 +105,42 @@ export function reducer(state, action) {
             role: action.role || 'student',
           },
           demoMode: false,
+          checked: true,
         },
       }
     }
+    case 'AUTH_CHECKED':
+      // The stored token was looked at and found absent or already verified. Only ever
+      // clears the flag: a concurrent LOGIN must not be undone by a late AUTH_CHECKED.
+      if (state.auth.checked) return state
+      return { ...state, auth: { ...state.auth, checked: true } }
     case 'LOGOUT':
-      return { ...state, auth: { user: null, demoMode: true } }
+      // Drop every trace of the previous account. Leaving `projects` in place is what
+      // let the next sign-in on this browser render the previous user's projects before
+      // hydration finished.
+      return {
+        ...state,
+        auth: { user: null, demoMode: true, checked: true },
+        projects: [],
+        projectsOwnerId: null,
+        currentProjectId: null,
+        hydrated: false,
+        simCache: {},
+        interview: { history: [], log: [], index: 0 },
+        settings: defaultSettings,
+        notifications: [],
+        toast: null,
+      }
+    case 'LOAD_PREFS': {
+      const prefs = action.prefs
+      if (!prefs) return state
+      return {
+        ...state,
+        workload: { ...state.workload, ...(prefs.workload || {}) },
+        interview: { ...state.interview, ...(prefs.interview || {}) },
+        settings: { ...state.settings, ...(prefs.settings || {}) },
+      }
+    }
     case 'SET_PROFILE':
       return { ...state, settings: { ...state.settings, ...action.settings } }
     case 'SET_SETTINGS':
@@ -114,11 +148,12 @@ export function reducer(state, action) {
 
     case 'HYDRATE_PROJECTS': {
       const projects = action.projects || []
-      if (!projects.length) return { ...state, simCache: {} }
+      const ownerId = action.ownerId || null
       const currentProjectId = projects.some((p) => p.id === state.currentProjectId)
         ? state.currentProjectId
-        : projects[0].id
-      return { ...state, projects, currentProjectId, simCache: {} }
+        : (projects[0]?.id ?? null)
+      // An empty list is a valid answer: a brand-new account legitimately owns nothing.
+      return { ...state, projects, projectsOwnerId: ownerId, currentProjectId, simCache: {}, hydrated: true }
     }
 
     case 'CREATE_PROJECT': {
@@ -166,6 +201,23 @@ export function reducer(state, action) {
       return { ...state, toast: action.toast }
     case 'DISMISS_TOAST':
       return { ...state, toast: null }
+
+    case 'PUSH_NOTIFICATION': {
+      const item = action.notification
+      if (!item?.title) return state
+      // Newest first, and capped: an unbounded list would grow for the life of the tab.
+      const next = [{ ...item, id: item.id || `n${Date.now()}${++uid}`, read: false, at: Date.now() }, ...state.notifications]
+      return { ...state, notifications: next.slice(0, NOTIFICATION_LIMIT) }
+    }
+    case 'MARK_NOTIFICATION_READ':
+      return {
+        ...state,
+        notifications: state.notifications.map((n) => (n.id === action.id ? { ...n, read: true } : n)),
+      }
+    case 'MARK_ALL_NOTIFICATIONS_READ':
+      return { ...state, notifications: state.notifications.map((n) => ({ ...n, read: true })) }
+    case 'CLEAR_NOTIFICATIONS':
+      return { ...state, notifications: [] }
 
     default:
       return state

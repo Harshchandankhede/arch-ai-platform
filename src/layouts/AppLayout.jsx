@@ -1,54 +1,13 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import {
-  Activity,
-  Award,
-  Bell,
-  FileText,
-  FolderKanban,
-  GitBranch,
-  LayoutDashboard,
-  Menu,
-  Search,
-  Settings as SettingsIcon,
-  Sparkles,
-  Workflow,
-  X,
-} from 'lucide-react'
+import { FolderKanban, Menu, X } from 'lucide-react'
 import { useApp } from '../store/AppContext.jsx'
 import { resultKey } from '../store/useResults.js'
 import { colors, scoreColor } from '../theme/tokens.js'
 import { ToastHost } from '../components/ui.jsx'
-
-const navGroups = [
-  {
-    label: 'Workspace',
-    items: [
-      { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { to: '/projects', label: 'My Projects', icon: FolderKanban },
-    ],
-  },
-  {
-    label: 'Core Pipeline',
-    items: [
-      { to: '/builder', label: 'Architecture Builder', icon: Workflow },
-      { to: '/simulation', label: 'Simulation', icon: Activity },
-      { to: '/process-mining', label: 'Process Mining', icon: GitBranch },
-      { to: '/evaluation', label: 'Evaluation & Score', icon: Award },
-    ],
-  },
-  {
-    label: 'Insights',
-    items: [
-      { to: '/recommendations', label: 'AI Recommendations', icon: Sparkles },
-      { to: '/reports', label: 'Reports', icon: FileText },
-    ],
-  },
-  {
-    label: 'System',
-    items: [{ to: '/settings', label: 'Settings', icon: SettingsIcon }],
-  },
-]
+import GlobalSearch from '../components/GlobalSearch.jsx'
+import NotificationBell from '../components/NotificationBell.jsx'
+import { navGroups } from './navItems.js'
 
 function Sidebar({ open, onClose, health }) {
   const { currentProject } = useApp()
@@ -143,10 +102,7 @@ function Topbar({ onMenu }) {
         </span>
       </div>
 
-      <div className="hidden max-w-[360px] flex-1 items-center gap-2 rounded-[7px] border border-line bg-raised px-3 py-1.5 text-ink-faint md:flex">
-        <Search size={14} />
-        <span className="text-[12.5px]">Search projects, components, reports…</span>
-      </div>
+      <GlobalSearch />
 
       <div className="ml-auto flex items-center gap-3.5">
         {demoMode && (
@@ -154,15 +110,16 @@ function Topbar({ onMenu }) {
             Demo mode
           </span>
         )}
-        <button type="button" className="relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-[7px] border border-line bg-raised text-ink-dim">
-          <Bell size={15} />
-          <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-base-alt bg-red" />
-        </button>
+        <NotificationBell />
         <div
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-teal to-blue font-mono text-[12px] font-bold text-[#04120e]"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-teal to-blue font-mono text-[12px] font-bold text-[#04120e]"
           title={user?.email}
         >
           {user?.initials || '—'}
+        </div>
+        <div className="hidden min-w-0 leading-tight sm:block">
+          <div className="truncate text-[12.5px] font-semibold">{user?.name || 'Not signed in'}</div>
+          <div className="truncate font-mono text-[10.5px] text-ink-faint">{user?.email || '—'}</div>
         </div>
       </div>
     </header>

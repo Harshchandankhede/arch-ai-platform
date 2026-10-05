@@ -51,9 +51,17 @@ function nextVersionName(name, projects) {
 }
 
 export default function Projects() {
-  const { projects, currentProjectId, notify } = useApp()
+  const { projects, currentProjectId, notify, user, ownsProjects } = useApp()
   const dispatch = useDispatch()
   const navigate = useNavigate()
+
+  // Only ever work with a list that was fetched for the account that is signed in.
+  // While it is loading, or if ownership does not match, this is empty and the page
+  // shows the empty state rather than another account's projects.
+  const visibleProjects = useMemo(
+    () => (ownsProjects && Array.isArray(projects) ? projects.filter(Boolean) : []),
+    [ownsProjects, projects],
+  )
 
   const [formOpen, setFormOpen] = useState(false)
   const [name, setName] = useState('')
@@ -63,7 +71,7 @@ export default function Projects() {
   const [formError, setFormError] = useState('')
 
   const rows = useMemo(() => {
-    const list = Array.isArray(projects) ? projects.filter(Boolean) : []
+    const list = visibleProjects
     return list.map((project) => {
       const isCurrent = project.id === currentProjectId
       const open = (target) => {
@@ -104,7 +112,7 @@ export default function Projects() {
               onClick={() => {
                 const copy = {
                   id: makeId('p'),
-                  name: nextVersionName(project.name, projects),
+                  name: nextVersionName(project.name, visibleProjects),
                   description: project.description || '',
                   updatedAt: Date.now(),
                   arch: cloneArchitecture(project.arch),
@@ -134,7 +142,7 @@ export default function Projects() {
         ],
       }
     })
-  }, [projects, currentProjectId, dispatch, navigate, notify])
+  }, [visibleProjects, currentProjectId, dispatch, navigate, notify])
 
   async function onCreate(event) {
     event.preventDefault()
@@ -156,7 +164,7 @@ export default function Projects() {
     }
   }
 
-  const hasProjects = Array.isArray(projects) && projects.length > 0
+  const hasProjects = visibleProjects.length > 0
 
   return (
     <div>
@@ -229,7 +237,9 @@ export default function Projects() {
 
       <Card
         title="Project library"
-        sub={`${projects?.length ?? 0} project${(projects?.length ?? 0) === 1 ? '' : 's'} in this browser`}
+        sub={`${visibleProjects.length} project${visibleProjects.length === 1 ? '' : 's'} owned by ${
+          user?.email || 'your account'
+        }`}
       >
         {hasProjects ? (
           <DataTable

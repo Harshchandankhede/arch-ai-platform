@@ -6,31 +6,126 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 const ctx = read('src/store/AppContext.jsx')
 const reducer = read('src/store/reducer.js')
+const storage = read('src/store/storage.js')
 const api = read('src/services/api.js')
 const auth = read('src/services/auth.js')
 const migrate = read('src/services/migrateLocalData.js')
+const dashboard = read('src/pages/Dashboard.jsx')
 const builder = read('src/pages/Builder.jsx')
 const comparison = read('src/pages/Comparison.jsx')
 
 describe('BUG A — auth is never persisted separately from the token', () => {
-  it('persistable() does not write auth to localStorage', () => {
+  it('persistable() does not write auth or projects to localStorage', () => {
     const body = reducer.slice(reducer.indexOf('export function persistable'))
     const fn = body.slice(0, body.indexOf('}'))
     assert.doesNotMatch(fn, /auth:/, 'auth must not be persisted; the JWT is the only session source of truth')
+    assert.doesNotMatch(fn, /projects:/, 'projects are server-owned and must never be written to the browser')
   })
 
-  it('initFromStorage() never restores a persisted user', () => {
-    assert.match(reducer, /auth:\s*initialState\.auth/)
-    assert.doesNotMatch(reducer, /auth:\s*parsed\.auth/)
+  it('initFromStorage() reads nothing from storage at all', () => {
+    const body = reducer.slice(reducer.indexOf('export function initFromStorage'))
+    const fn = body.slice(0, body.indexOf('\n}'))
+    assert.doesNotMatch(fn, /localStorage/, 'boot must not read a cached blob; prefs load per user after /auth/me')
+    assert.doesNotMatch(fn, /seedProjects/, 'a new account must start with no projects, not a shared seed list')
   })
 
   it('isAuthed requires a live token, not just a cached user', () => {
-    assert.match(ctx, /isAuthed:\s*Boolean\(state\.auth\.user\)\s*&&\s*isAuthenticated\(\)/)
+    assert.match(ctx, /const signedIn = Boolean\(state\.auth\.user\) && isAuthenticated\(\)/)
+    assert.match(ctx, /isAuthed: signedIn/)
   })
 
-  it('the token and the state blob are different keys', () => {
+  it('the token and the per-user state blob are different keys', () => {
     assert.match(api, /TOKEN_KEY\s*=\s*'archai\.token'/)
-    assert.match(reducer, /STORAGE_KEY\s*=\s*'archai\.state\.v1'/)
+    assert.match(storage, /const PREFIX = 'archai\.state\.v1'/)
+    assert.match(storage, /return id \? `\$\{PREFIX\}\.u\.\$\{id\}` : null/)
+  })
+})
+
+describe('project data is scoped to the signed-in account', () => {
+  it('storage keys are namespaced per user id, never shared', () => {
+    assert.match(storage, /export function userStorageKey\(userId\)/)
+    const fn = storage.slice(storage.indexOf('export function userStorageKey'))
+    assert.match(fn.slice(0, fn.indexOf('\n}')), /\.u\./, 'the key must embed the user id')
+  })
+
+  it('nothing is persisted while signed out', () => {
+    // Slice the effect body only: `purgeLegacyState` also appears in the import list.
+    const start = ctx.indexOf('const userId = state.auth.user?.id\n    if (!userId) return')
+    const effect = ctx.slice(start, ctx.indexOf('}, [state])', start))
+    assert.ok(start > -1, 'the persistence effect must resolve the signed-in user id first')
+    assert.match(effect, /if \(!userId\) return/, 'an anonymous blob would be shared by every later visitor')
+    assert.match(effect, /writeUserState\(userId, persistable\(state\)\)/)
+  })
+
+  it('the stale shared blob is purged at startup', () => {
+    assert.match(ctx, /purgeLegacyState\(\)/)
+  })
+
+  it('LOGOUT clears the previous account\'s projects and results', () => {
+    const body = reducer.slice(reducer.indexOf("case 'LOGOUT'"), reducer.indexOf("case 'LOAD_PREFS'"))
+    assert.match(body, /projects: \[\]/, 'sign-out must not leave another account\'s projects in memory')
+    assert.match(body, /currentProjectId: null/)
+    assert.match(body, /simCache: \{\}/)
+    assert.match(body, /projectsOwnerId: null/)
+  })
+
+  it('HYDRATE_PROJECTS records which account the list belongs to', () => {
+    assert.match(reducer, /projectsOwnerId: ownerId/)
+    assert.match(reducer, /hydrated: true/)
+  })
+
+  it('the context refuses to expose projects owned by someone else', () => {
+    assert.match(ctx, /const ownsProjects = Boolean\(userId\) && state\.projectsOwnerId === userId/)
+    assert.match(ctx, /ownsProjects: signedIn && ownsProjects/)
+    assert.match(
+      ctx,
+      /projects: ownsProjects \? state\.projects : \[\]/,
+      'the raw project list must be emptied unless it belongs to the signed-in user',
+    )
+    assert.match(
+      ctx,
+      /currentProject: ownsProjects \? state\.projects\.find/,
+      'currentProject must be null unless the list belongs to the signed-in user',
+    )
+    assert.match(ctx, /projectById: \(id\) => \(ownsProjects \?/)
+  })
+
+  it('no page reads the project list without going through the gate', () => {
+    // Comparison and Reports both index `projects` directly; they are safe only because
+    // the context hands them an empty list when ownership does not match.
+    for (const name of ['Comparison.jsx', 'Reports.jsx']) {
+      assert.match(ctx, /projects: ownsProjects \? state\.projects : \[\]/, `${name} depends on this gate`)
+    }
+  })
+
+  it('a late response for a previous account is discarded', () => {
+    // The owner id is taken from the verified /auth/me result, so a response that lands
+    // after a sign-out or a different account cannot be applied to the current session.
+    assert.match(ctx, /const stillOurs = \(\) => current\(\) && isAuthenticated\(\)/)
+    assert.match(ctx, /if \(stillOurs\(\)\) dispatch\(\{ type: 'HYDRATE_PROJECTS', projects: \[\], ownerId: userId \}\)/)
+    assert.match(ctx, /dispatch\(\{ type: 'HYDRATE_PROJECTS', projects, ownerId: userId \}\)/)
+  })
+
+  it('a connectivity failure never substitutes a cached project list', () => {
+    // The old fallback returned `local` projects here, which handed one account the
+    // previous account's work whenever the backend was unreachable.
+    assert.match(migrate, /source:\s*'unauthorized'/)
+    assert.doesNotMatch(migrate, /source: 'local'/, 'a local list may belong to a different account')
+    assert.doesNotMatch(migrate, /migrateLocalProjects/, 'there is no local project list left to migrate')
+  })
+
+  it('the Dashboard gates on the session and on ownership before rendering data', () => {
+    assert.match(dashboard, /if \(!isAuthed\) \{\s*return <Navigate to="\/login" replace \/>/)
+    assert.match(dashboard, /if \(!hydrated \|\| !ownsProjects\)/)
+    assert.ok(
+      dashboard.indexOf('if (!isAuthed)') < dashboard.indexOf('if (!currentProject)'),
+      'the auth check must precede the empty-project branch',
+    )
+  })
+
+  it('protected routes still redirect when there is no session', () => {
+    const app = read('src/App.jsx')
+    assert.match(app, /if \(!isAuthed\) return <Navigate to="\/login"/)
   })
 })
 
@@ -46,7 +141,7 @@ describe('BUG B — no request loop through notify identity', () => {
   })
 
   it('the context memo lists notify and dismissToast as dependencies', () => {
-    assert.match(ctx, /\[state,\s*notify,\s*dismissToast\]/)
+    assert.match(ctx, /\[state,\s*notify,\s*dismissToast/)
   })
 
   it('Builder never calls notify from inside a callback feeding its effect', () => {
@@ -115,18 +210,6 @@ describe('401 handling — handled once, no retry', () => {
     assert.match(migrate, /source:\s*'unauthorized'/)
   })
 
-  it('migration aborts on the first 401 instead of firing one bad POST per project', () => {
-    assert.match(migrate, /unauthorized:\s*true/)
-  })
-
-  it('migration is not marked complete when nothing migrated', () => {
-    assert.match(migrate, /if \(locals\.length === 0 \|\| migrated > 0\)/)
-  })
-
-  it('sign-out clears the migration flag so another account can migrate', () => {
-    assert.match(auth, /localStorage\.removeItem\(MIGRATED_KEY\)/)
-  })
-
   it('errors never carry the Authorization header', () => {
     assert.doesNotMatch(api, /wrapped\.response/)
     // error.config is only ever read to build a message, never attached to the error.
@@ -137,7 +220,34 @@ describe('401 handling — handled once, no retry', () => {
 
 describe('session restoration', () => {
   it('a reload with a valid token restores the session via /auth/me', () => {
-    assert.match(ctx, /const user = await fetchCurrentUser\(\)/)
+    assert.match(ctx, /user = await fetchCurrentUser\(\)/)
+  })
+
+  it('runs on token presence, not on a cached user', () => {
+    // This is the bug that sent every refresh to /login. Auth is deliberately not
+    // persisted, so after a reload `state.auth.user` is null while the JWT is still valid.
+    // Keying hydration on the user id meant the effect never fired on a reload at all.
+    // Slice from the effect's own doc comment: the provider has several effects and an
+    // earlier `useEffect(() => {` would otherwise match the preference-persistence one.
+    const start = ctx.indexOf('// Runs when a token is available')
+    assert.ok(start > -1, 'the hydration effect must be identifiable')
+    const effect = ctx.slice(start, ctx.indexOf('}, [state.auth.user?.id])', start))
+    assert.match(effect, /const token = tokenStore\.get\(\)/)
+    assert.match(effect, /dispatch\(\{ type: 'AUTH_CHECKED' \}\)/)
+    assert.doesNotMatch(effect, /const userId = state\.auth\.user\?\.id/)
+    // The id used for scoping has to come from the verified token, not from prior state.
+    assert.match(effect, /const userId = user\.id/)
+  })
+
+  it('the route guard waits for the check instead of redirecting on the first frame', () => {
+    const app = read('src/App.jsx')
+    assert.match(app, /if \(!authChecked\) return <Loading/)
+    assert.match(app, /if \(!isAuthed\) return <Navigate to="\/login"/)
+    assert.ok(
+      app.indexOf('!authChecked') < app.indexOf('!isAuthed'),
+      'the wait must come before the redirect, or a reload still lands on /login',
+    )
+    assert.match(ctx, /authChecked: Boolean\(state\.auth\.checked\)/)
   })
 
   it('an unusable token signs out instead of continuing', () => {
@@ -153,5 +263,11 @@ describe('session restoration', () => {
     const tail = ctx.slice(ctx.indexOf('fetchProjectsWithFallback'))
     assert.match(tail, /source === 'unauthorized'/)
     assert.match(tail, /isAuthenticated\(\) && projects/)
+  })
+
+  it('AUTH_CHECKED cannot undo a sign-in that already landed', () => {
+    const reducer = read('src/store/reducer.js')
+    const body = reducer.slice(reducer.indexOf("case 'AUTH_CHECKED'"), reducer.indexOf("case 'LOGOUT'"))
+    assert.match(body, /if \(state\.auth\.checked\) return state/)
   })
 })

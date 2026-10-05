@@ -1,100 +1,145 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
-import { initFromStorage, persistable, reducer, STORAGE_KEY } from './reducer.js'
-import { fetchProjectsWithFallback, migrateLocalProjects } from '../services/migrateLocalData.js'
+import { initFromStorage, loadPrefsFor, persistable, reducer } from './reducer.js'
+import { purgeLegacyState, writeUserState } from './storage.js'
+import { fetchProjectsWithFallback } from '../services/migrateLocalData.js'
 import { onSessionInvalidated } from '../services/api.js'
 import { isAuthenticated, fetchCurrentUser } from '../services/auth.js'
+import { tokenStore } from '../services/api.js'
+import { setNotificationSink } from './notificationSink.js'
 
 const AppStateContext = createContext(null)
 const AppDispatchContext = createContext(null)
 
-// Hydration is guarded at module scope rather than with a component ref. A ref latch
-// set before the first await is incompatible with React StrictMode: the double-invoke
-// runs cleanup (cancelling the in-flight request) and then skips the effect entirely,
-// so the /auth/me result was discarded and a valid token never restored the session.
-let hydrationState = 'idle'
+// Hydration is guarded by the VALUE OF THE TOKEN, not by a boolean flag.
+//
+// The previous guard was a module-level 'idle' | 'running' | 'done' latch. That is not a
+// safe key: a hot reload re-evaluates the module and resets it to 'idle' while a token is
+// still live, so the effect restarted, refetched /auth/me, re-dispatched LOGIN, changed
+// its own dependency, and ran again. That is the repeated
+// "GET /auth/me, GET /api/projects, GET /auth/me, ..." loop in the server log.
+//
+// Comparing the token itself makes the guard idempotent: the same session is restored
+// exactly once, and a genuinely new session (sign-in, or sign-out followed by sign-in)
+// always has a different token and therefore always re-hydrates.
+let hydratedToken = null
 let hydrationGeneration = 0
 
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, undefined, initFromStorage)
   const timer = useRef(null)
 
+  // Preferences are written under a key derived from the signed-in user id, so one
+  // account's workload/profile/interview history can never surface under another.
+  // Nothing is written while signed out: an anonymous blob would be shared by every
+  // subsequent visitor. Projects are never written at all — they are server-owned.
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable(state)))
-    } catch {
-      // storage full or unavailable; app still works in-memory
-    }
+    const userId = state.auth.user?.id
+    if (!userId) return
+    writeUserState(userId, persistable(state))
   }, [state])
 
-  // Runs when the session becomes available. Keyed on authentication rather than [] so
-  // that a user who signs in during this session still gets their projects loaded, and a
-  // user whose token expires and is later replaced still re-hydrates.
+  // The pre-namespacing `archai.state.v1` blob may still hold a project list from an
+  // earlier session. Remove it once so that data is not readable by any later account.
   useEffect(() => {
-    if (!isAuthenticated()) return
-    if (hydrationState !== 'idle') return
-    hydrationState = 'running'
+    purgeLegacyState()
+  }, [])
+
+  // Runs when a token is available: once on mount when the browser still holds a session,
+  // and again after a manual sign-in.
+  //
+  // It must NOT be keyed on `state.auth.user`. Auth is deliberately not persisted, so after
+  // a reload `auth.user` is null while the JWT is still valid. Keying on the user therefore
+  // meant this effect never ran on a reload, the session was never restored, and the route
+  // guard sent every refresh to /login.
+  useEffect(() => {
+    // No token at all: nothing to restore. Still mark the check as done, otherwise the route
+    // guard would sit on a loader forever for a genuinely signed-out visitor.
+    const token = tokenStore.get()
+    if (!token) {
+      hydratedToken = null
+      dispatch({ type: 'AUTH_CHECKED' })
+      return undefined
+    }
+    // Already restored, or already being restored, for this exact session. This is what
+    // makes the effect idempotent under StrictMode's mount/unmount/mount: the second invoke
+    // sees the same token and stands down, so exactly one request is ever in flight.
+    if (hydratedToken === token) return undefined
+    hydratedToken = token
     const generation = ++hydrationGeneration
 
-    // The dispatch from useReducer is stable for the lifetime of the provider, so it is
-    // safe to call after this effect's cleanup has run. Results are only applied if they
-    // belong to the most recent hydration attempt.
+    // Deliberately NO AbortController cleanup here.
+    //
+    // StrictMode's synthetic unmount fires a cleanup immediately after mount. An earlier
+    // version aborted on cleanup, which cancelled the only /auth/me request, while the guard
+    // above then refused to let the remount retry it. `auth.checked` was never dispatched and
+    // the app hung on "Restoring your session..." forever.
+    //
+    // The token guard already prevents a duplicate request, and `current()` below discards
+    // the result if a genuinely newer hydration superseded this one. Leaving the request to
+    // finish is therefore both safe and necessary.
+
     const current = () => generation === hydrationGeneration
 
     ;(async () => {
-      // Restore the session from the token itself. Auth is no longer persisted, so a
-      // reload with a still-valid JWT would otherwise drop the user to the login page.
-      // A rejected token (expired or wrong secret) clears the token and leaves the
-      // app signed out, instead of rendering protected routes with no Authorization
+      // Restore the session from the token itself. A rejected token (expired or wrong
+      // secret) signs out instead of rendering protected routes with no Authorization
       // header and retrying protected calls indefinitely.
+      let user
       try {
-        const user = await fetchCurrentUser()
-        if (!current()) return
-        if (!user) {
-          // A 200 without a user means the token is not usable. Sign out rather than
-          // continuing into requests that are guaranteed to fail.
-          hydrationState = 'idle'
-          dispatch({ type: 'LOGOUT' })
-          return
-        }
-        dispatch({ type: 'LOGIN', name: user.name, email: user.email, id: user.id, role: user.role })
+        user = await fetchCurrentUser()
       } catch {
         if (!current()) return
-        hydrationState = 'idle'
+        // Forget the attempt so a later trigger can retry, rather than leaving a token that
+        // looks hydrated when the fetch never actually completed.
+        hydratedToken = null
+        dispatch({ type: 'LOGOUT' })
+        return
+      }
+      if (!current()) return
+      if (!user) {
+        // A 200 without a user means the token is not usable. Sign out rather than
+        // continuing into requests that are guaranteed to fail.
         dispatch({ type: 'LOGOUT' })
         return
       }
 
+      const userId = user.id
+      const stillOurs = () => current() && isAuthenticated()
+      dispatch({ type: 'LOGIN', name: user.name, email: user.email, id: userId, role: user.role })
+      // Preferences live under this user's key, so they can only be read now that the
+      // account is known.
+      dispatch({ type: 'LOAD_PREFS', prefs: loadPrefsFor(userId) })
+
       // Re-check the token after the round-trip: a token can expire between the
-      // /auth/me check and these calls, and issuing known-doomed signed-out
+      // /auth/me check and this call, and issuing known-doomed signed-out
       // requests is what produced the original 401 storm.
       if (!isAuthenticated()) {
-        if (current()) {
-          hydrationState = 'idle'
-          dispatch({ type: 'LOGOUT' })
-        }
+        if (current()) dispatch({ type: 'LOGOUT' })
         return
       }
-
-      try {
-        await migrateLocalProjects()
-      } catch {
-        // migration is best-effort
-      }
-      if (!current()) return
-      if (!isAuthenticated()) return
 
       const { projects, source } = await fetchProjectsWithFallback()
       if (!current()) return
-      // Only hydrate while still authenticated. After a 401 the session listener has
-      // already dispatched LOGOUT; writing projects now would leave a signed-out app
-      // holding a project list it may never be allowed to read.
       if (source === 'unauthorized') {
-        hydrationState = 'idle'
+        // After a 401 the session listener has already dispatched LOGOUT; writing
+        // projects now would leave a signed-out app holding a list it may never read.
         dispatch({ type: 'LOGOUT' })
         return
       }
-      if (isAuthenticated() && projects) dispatch({ type: 'HYDRATE_PROJECTS', projects })
-      hydrationState = 'done'
+
+      // 'error' means the server could not be reached. The user stays signed in and sees
+      // an empty, clearly-labelled workspace rather than a cached list that might belong
+      // to someone else.
+      if (source === 'error' || !projects) {
+        if (stillOurs()) dispatch({ type: 'HYDRATE_PROJECTS', projects: [], ownerId: userId })
+        return
+      }
+
+      // Only hydrate while still authenticated as the same account. The owner id travels
+      // with the payload so the UI can verify the list belongs to the signed-in user.
+      if (isAuthenticated() && projects) {
+        dispatch({ type: 'HYDRATE_PROJECTS', projects, ownerId: userId })
+      }
     })()
   }, [state.auth.user?.id])
 
@@ -105,8 +150,9 @@ export function AppProvider({ children }) {
   useEffect(
     () =>
       onSessionInvalidated(() => {
-        // Reset the latch so signing in again in this session re-hydrates.
-        hydrationState = 'idle'
+        // The token is already gone, so forget which session was hydrated. Signing in again
+        // issues a different token and is therefore allowed to hydrate.
+        hydratedToken = null
         dispatch({ type: 'LOGOUT' })
       }),
     [],
@@ -125,19 +171,68 @@ export function AppProvider({ children }) {
 
   const dismissToast = useCallback(() => dispatch({ type: 'DISMISS_TOAST' }), [])
 
-  const value = useMemo(
-    () => ({
+  /**
+   * Adds a persistent, bell-visible notification. Separate from `notify`, which raises a
+   * toast that dismisses itself after 2.6s: a finished simulation is worth keeping around
+   * until it has actually been read.
+   *
+   * Must keep a stable identity. Pages list it in effect dependencies, and a new reference
+   * on every render would restart those effects on every dispatch.
+   */
+  const pushNotification = useCallback((notification) => {
+    dispatch({ type: 'PUSH_NOTIFICATION', notification })
+  }, [])
+  const markNotificationRead = useCallback((id) => dispatch({ type: 'MARK_NOTIFICATION_READ', id }), [])
+  const markAllNotificationsRead = useCallback(
+    () => dispatch({ type: 'MARK_ALL_NOTIFICATIONS_READ' }),
+    [],
+  )
+  const clearNotifications = useCallback(() => dispatch({ type: 'CLEAR_NOTIFICATIONS' }), [])
+
+  // useResults notifies through a module-level sink rather than a hook, because a run
+  // started on one page can finish while another page is mounted. Registered here, once, so
+  // "simulation finished" raises a bell notification wherever the user has navigated to.
+  useEffect(() => {
+    setNotificationSink((n) => dispatch({ type: 'PUSH_NOTIFICATION', notification: n }))
+    return () => setNotificationSink(null)
+  }, [])
+
+  const userId = state.auth.user?.id || null
+
+  const value = useMemo(() => {
+    const signedIn = Boolean(state.auth.user) && isAuthenticated()
+    // Project data is only trustworthy when it was fetched for the account that is
+    // currently signed in. Pages gate on this so a stale list can never be rendered as
+    // the current user's own work.
+    const ownsProjects = Boolean(userId) && state.projectsOwnerId === userId
+    const notifications = state.notifications || []
+    return {
       ...state,
+      // Expose an empty list unless it was fetched for the account that is signed in.
+      // Gating here rather than per page means no component can render another
+      // account's projects by reading `projects` straight off the context.
+      projects: ownsProjects ? state.projects : [],
       user: state.auth.user,
-      isAuthed: Boolean(state.auth.user) && isAuthenticated(),
+      isAuthed: signedIn,
+      // True once the stored token has been verified either way. The route guard waits on
+      // this instead of treating "not looked yet" as "signed out".
+      authChecked: Boolean(state.auth.checked),
       demoMode: state.auth.demoMode,
-      currentProject: state.projects.find((p) => p.id === state.currentProjectId) || null,
-      projectById: (id) => state.projects.find((p) => p.id === id) || null,
+      // True only when there is a session, the project list is loaded, and it belongs to
+      // this user. Anything else must not be rendered as the user's data.
+      ownsProjects: signedIn && ownsProjects,
+      currentProject: ownsProjects ? state.projects.find((p) => p.id === state.currentProjectId) || null : null,
+      projectById: (id) => (ownsProjects ? state.projects.find((p) => p.id === id) || null : null),
+      notifications,
+      unreadCount: notifications.filter((n) => !n.read).length,
+      pushNotification,
+      markNotificationRead,
+      markAllNotificationsRead,
+      clearNotifications,
       notify,
       dismissToast,
-    }),
-    [state, notify, dismissToast],
-  )
+    }
+  }, [state, notify, dismissToast, userId, pushNotification, markNotificationRead, markAllNotificationsRead, clearNotifications])
 
   return (
     <AppStateContext.Provider value={value}>

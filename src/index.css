@@ -31,6 +31,14 @@
     height: 100%;
   }
 
+  /* Paint the canvas itself, not just <body>. A background on body propagates to the
+     canvas only while body is the root box; pinning it on html as well guarantees the
+     page is never transparent, so scrolling can never reveal the browser's default
+     white behind a short or overflowing container. */
+  html {
+    background-color: var(--color-base);
+  }
+
   body {
     background-color: var(--color-base);
     color: var(--color-ink);
@@ -86,7 +94,11 @@
   }
 }
 
+/* Both grid classes now declare their own background. Previously they set only
+   background-image, so the grid inherited whatever happened to be painted underneath and
+   turned into near-black lines on white wherever the page behind them was light. */
 .blueprint-shell {
+  background-color: var(--color-base);
   background-image:
     linear-gradient(var(--color-line-soft) 1px, transparent 1px),
     linear-gradient(90deg, var(--color-line-soft) 1px, transparent 1px);
@@ -95,6 +107,7 @@
 }
 
 .blueprint-canvas {
+  background-color: var(--color-base);
   background-image:
     linear-gradient(var(--color-line-soft) 1px, transparent 1px),
     linear-gradient(90deg, var(--color-line-soft) 1px, transparent 1px);
@@ -116,22 +129,38 @@
     display: none !important;
   }
 
+  /* The previous rule set body to white but left every panel on its dark `bg-surface`,
+     so printing produced a white page with dark cards, and the blueprint grid drew
+     near-black lines across the paper. Print keeps the app's own dark theme end to end
+     instead, so the background is identical to the screen. Browsers strip backgrounds
+     unless asked not to, hence print-color-adjust. */
+  html,
   body {
-    background: #fff;
-    color: #111;
+    background-color: var(--color-base) !important;
+    color: var(--color-ink) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
+  /* Keep panels on their theme surface rather than letting the old white override win. */
   .print-doc {
-    background: #fff !important;
-    color: #111 !important;
-    border: none !important;
+    background: var(--color-surface) !important;
+    color: var(--color-ink) !important;
+    border-color: var(--color-line) !important;
     max-width: 100% !important;
     padding: 0 !important;
   }
 
   .print-doc * {
-    color: #111 !important;
-    border-color: #ccc !important;
+    color: var(--color-ink) !important;
+    border-color: var(--color-line) !important;
+  }
+
+  /* Avoid splitting a card across two sheets. */
+  .print-doc,
+  .print-doc table,
+  .print-doc tr {
+    break-inside: avoid;
   }
 }
 

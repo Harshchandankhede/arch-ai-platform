@@ -1,5 +1,4 @@
 import api, { tokenStore } from './api.js'
-import { MIGRATED_KEY } from './migrateLocalData.js'
 
 export async function login({ email, password }) {
   const { data } = await api.post('/auth/login', { email, password })
@@ -19,14 +18,9 @@ export async function fetchCurrentUser() {
 }
 
 export function logout() {
+  // Clearing the token is enough to end the session: projects were never cached locally,
+  // and the reducer drops them on LOGOUT, so the next sign-in starts from its own data.
   tokenStore.clear()
-  // The migration flag is per-browser but the projects it guards are per-account.
-  // Leaving it set would stop the next account from ever migrating its local work.
-  try {
-    localStorage.removeItem(MIGRATED_KEY)
-  } catch {
-    // storage unavailable; sign-out must still succeed
-  }
 }
 
 export function isAuthenticated() {

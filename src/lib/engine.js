@@ -124,6 +124,12 @@ export function runSimulation(contract, workload, options) {
   const windowMs = Math.max(0, duration) * 1000
   const rng = createRng(seed)
 
+  // How many arrivals the run window is expected to produce. This sets the sampling
+  // stride for the event log so the logged cases are spread across the entire duration
+  // instead of clustered at its start.
+  const expectedCases = Math.max(1, Math.round(positiveNumber(load.arrivalRate, 0) * positiveNumber(load.duration, 0)))
+  const sampleEvery = Math.max(1, Math.floor(expectedCases / maxLoggedCases))
+
   const graph = graphOf(architecture)
   const { list: componentList, index: componentIndex } = buildComponents(graph)
   const entries = resolveEntries(architecture, graph, componentIndex)
@@ -329,7 +335,13 @@ export function runSimulation(contract, workload, options) {
     totalRequests += 1
     inFlight += 1
     const simCase = { id: nextCaseId, startTime: now, queuedAt: now, steps: 0, retries: 0, logged: false }
-    if (loggedCaseSlots < maxLoggedCases) {
+    // Sample every Nth arrival rather than the first N. Logging only the opening
+    // requests meant the event log covered the first 400/arrivalRate seconds of the run
+    // and nothing after it, so at 300 req/s a 100 s run was represented by its first
+    // 1.3 s. Spreading the same budget across the whole window keeps the replay
+    // timeline aligned with the configured duration. Deterministic for a given seed,
+    // and still capped at maxLoggedCases so memory stays bounded.
+    if (nextCaseId % sampleEvery === 0 && loggedCaseSlots < maxLoggedCases) {
       simCase.logged = true
       loggedCaseSlots += 1
     }
@@ -369,16 +381,25 @@ export function runSimulation(contract, workload, options) {
 
   const sampledCaseIds = new Set()
   const trimmedLog = []
+  let firstLoggedTs = 0
+  let lastLoggedTs = 0
   for (let i = 0; i < eventLog.length; i += 1) {
     const event = eventLog[i]
     if (!finishedCaseIds.has(event.caseId)) continue
     event.eventId = trimmedLog.length + 1
     sampledCaseIds.add(event.caseId)
+    if (!trimmedLog.length) firstLoggedTs = event.timestamp
+    lastLoggedTs = event.timestamp
     trimmedLog.push(event)
   }
 
-  const simulatedRaw = Math.max(windowMs, lastEventTime, 0)
-  const simulatedMs = round(simulatedRaw, 3)
+// The span that was genuinely simulated, not the span that was asked for. A heavy
+// workload exhausts MAX_PROCESSED_EVENTS before the arrival window closes, and using
+// windowMs there divided every busyTime by a span that never ran, understating
+// utilisation (a run truncated at half its window reported roughly half the real load).
+const truncated = processedEvents >= MAX_PROCESSED_EVENTS && lastEventTime < windowMs
+const simulatedRaw = Math.max(lastEventTime > 0 ? lastEventTime : windowMs, 0)
+const simulatedMs = round(simulatedRaw, 3)
   const denominator = simulatedRaw > 0 ? simulatedRaw / 1000 : 1
   const finishedCount = latencies.length
   latencies.sort((a, b) => a - b)
@@ -418,6 +439,9 @@ export function runSimulation(contract, workload, options) {
     failureRate: round((failedRequests / safeTotal) * 100, 3),
     dropRate: round((droppedRequests / safeTotal) * 100, 3),
     simulatedMs,
+    // True when the event budget stopped the run before the requested duration elapsed.
+    // The UI must say so rather than presenting a short run as a full one.
+    truncated,
     littleLawConcurrency: round(littleLawConcurrency, 4),
   }
 
@@ -453,6 +477,10 @@ export function runSimulation(contract, workload, options) {
     arrivalRate,
     duration,
     concurrentUsers: round(littleLawConcurrency, 4),
+    // The span actually simulated, in ms. Lower than duration * 1000 only when the event
+    // budget cut the run short.
+    simulatedMs,
+    truncated,
     metrics,
     components,
     eventLog: trimmedLog,
@@ -463,6 +491,11 @@ export function runSimulation(contract, workload, options) {
       loggedEvents: trimmedLog.length,
       sampledCases: sampledCaseIds.size,
       totalCases: totalRequests,
+      // Every logged case comes from the same deterministic stride, so the sample is an
+      // even systematic sample of the run rather than a prefix of it.
+      sampleEvery,
+      expectedCases,
+      loggedWindowMs: trimmedLog.length ? lastLoggedTs - firstLoggedTs : 0,
     },
     entryIds: entries,
     terminalIds,

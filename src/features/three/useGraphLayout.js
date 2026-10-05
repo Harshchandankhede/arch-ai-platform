@@ -188,18 +188,7 @@ export function useGraphLayout(architecture, sim) {
   return useMemo(() => computeGraphLayout(architecture, sim), [architecture, sim])
 }
 
-export function usePrefersReducedMotion() {
-  const [reduced, setReduced] = useState(false)
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
-    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const sync = () => setReduced(query.matches)
-    sync()
-    query.addEventListener('change', sync)
-    return () => query.removeEventListener('change', sync)
-  }, [])
-  return reduced
-}
+export { usePrefersReducedMotion } from '../../lib/useReducedMotion.js'
 
 export function useDocumentActive() {
   const [active, setActive] = useState(true)

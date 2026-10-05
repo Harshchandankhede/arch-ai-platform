@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict'
+﻿import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import { toContract } from '../src/lib/contract.js'
@@ -6,7 +6,6 @@ import { runSimulation } from '../src/lib/engine.js'
 import { mineEventLog, miningOptions } from '../src/lib/mining.js'
 import {
   buildTrajectories,
-  chooseReplayWindow,
   locateAt,
   statsAt,
 } from '../src/lib/trajectories.js'
@@ -164,60 +163,17 @@ describe('statsAt', () => {
 
   it('is safe with no trajectories', () => {
     const stats = statsAt([], 0)
-    assert.deepEqual(stats, { inFlight: 0, completed: 0, failed: 0, dropped: 0, perNode: new Map() })
+    assert.deepEqual(stats, {
+      inFlight: 0,
+      completed: 0,
+      failed: 0,
+      dropped: 0,
+      estimated: false,
+      perNode: new Map(),
+    })
   })
 })
 
-describe('chooseReplayWindow', () => {
-  it('prefers the busiest slice of the run', () => {
-    const trajs = buildTrajectories(simAt(600).eventLog)
-    const win = chooseReplayWindow(trajs, { windowMs: 1500 })
-    assert.ok(win.concurrency > 0)
-
-    // concurrency must describe the window that is actually returned.
-    const inWindow = trajs.filter((t) => t.start < win.end && t.end > win.start).length
-    assert.equal(inWindow, win.concurrency)
-
-    // An idle slice must not beat the chosen one, and the search must have found a busy
-    // stretch at least as loaded as the very first slice.
-    const first = { start: trajs[0].start, end: trajs[0].start + 1500 }
-    const firstCount = trajs.filter((t) => t.start < first.end && t.end > first.start).length
-    assert.ok(win.peakConcurrency >= firstCount)
-  })
-
-  it('wraps where traffic is thinnest so the loop does not snap', () => {
-    const trajs = buildTrajectories(simAt(600).eventLog)
-    const win = chooseReplayWindow(trajs, { windowMs: 1500 })
-    // The wrap point is chosen for a lower in-window count than the busiest slice, which
-    // is what keeps requests from teleporting backwards at the loop boundary.
-    assert.ok(win.concurrency <= win.peakConcurrency)
-  })
-
-  it('falls back safely when there is nothing to replay', () => {
-    const win = chooseReplayWindow([], { windowMs: 800 })
-    assert.equal(win.start, 0)
-    assert.equal(win.end, 800)
-    assert.equal(win.concurrency, 0)
-  })
-
-  it('handles a single instant run', () => {
-    const traj = { start: 5, end: 5, hops: [] }
-    const win = chooseReplayWindow([traj], { windowMs: 100 })
-    assert.equal(win.start, 5)
-    assert.equal(win.end, 105)
-    assert.equal(win.concurrency, 1)
-  })
-
-  it('clamps the window when the sampled span is shorter than requested', () => {
-    // A saturated run's logged cases can span far less simulated time than the window the
-    // page asks for; the returned window must still sit inside the real data.
-    const trajs = buildTrajectories(simAt(3000, weakArchitecture()).eventLog)
-    const span = trajs[trajs.length - 1].end - trajs[0].start
-    const win = chooseReplayWindow(trajs, { windowMs: 3000 })
-    assert.ok(win.concurrency > 0, 'a real window must report a real concurrency')
-    assert.ok(win.end - win.start <= Math.max(1, span) + 1e-6, 'window must not exceed the data span')
-  })
-})
 
 describe('the animation is driven by the simulation, not decoration', () => {
   it('derives its data from the same event log the mining stage consumes', () => {
@@ -229,16 +185,57 @@ describe('the animation is driven by the simulation, not decoration', () => {
   })
 
   it('changes when the workload changes', () => {
-    const light = buildTrajectories(simAt(100).eventLog)
-    const heavy = buildTrajectories(simAt(1000).eventLog)
-    const peak = (list) => {
+    const lightSim = simAt(100)
+    const heavySim = simAt(1000)
+    // The event log holds every Nth arrival so that it spans the whole run, so raw counts
+    // of sampled cases are not concurrency. Both runs are sampled to the same 400 cases,
+    // which means the sample alone says nothing about load; the logging stride carries
+    // that information and has to be applied before comparing.
+    const peak = (sim) => {
+      const list = buildTrajectories(sim.eventLog)
+      const stride = Math.max(1, Number(sim.loggingStats.sampleEvery) || 1)
       let best = 0
-      for (const t of list) {
-        const overlap = list.filter((o) => o.start < t.end && o.end > t.start).length
+      for (const traj of list) {
+        const overlap = list.filter((o) => o.start < traj.end && o.end > traj.start).length
         best = Math.max(best, overlap)
       }
-      return best
+      return best * stride
     }
-    assert.ok(peak(heavy) > peak(light), 'a busier workload must show more concurrent requests')
+    assert.ok(
+      peak(heavySim) > peak(lightSim),
+      `a busier workload must show more concurrent requests (light ${peak(lightSim)}, heavy ${peak(heavySim)})`,
+    )
+  })
+
+  it('the log is spread across the whole run, not clustered at its start', () => {
+    // Logging only the first N arrivals meant a long run was represented by its opening
+    // seconds, so the replay could never line up with the configured duration.
+    const sim = simAt(300)
+    const list = buildTrajectories(sim.eventLog)
+    assert.ok(list.length > 100, `expected a populated sample, got ${list.length}`)
+    const span = list[list.length - 1].end - list[0].start
+    const runMs = sim.duration * 1000
+    assert.ok(
+      span > runMs * 0.9,
+      `the logged sample should cover most of the ${sim.duration}s run, covered ${(span / 1000).toFixed(1)}s`,
+    )
+    // Sampling must stay within the logging budget.
+    assert.ok(list.length <= sim.loggingStats.sampledCases)
+  })
+
+  it('statsAt extrapolates sampled counters and leaves the per-node split alone', () => {
+    const sim = simAt(300)
+    const list = buildTrajectories(sim.eventLog)
+    const stride = Math.max(1, Number(sim.loggingStats.sampleEvery) || 1)
+    const at = list[0].start + (list[list.length - 1].end - list[0].start) / 2
+
+    const raw = statsAt(list, at)
+    const scaled = statsAt(list, at, { scale: stride })
+
+    assert.equal(raw.estimated, false)
+    assert.equal(scaled.estimated, stride > 1)
+    assert.ok(scaled.inFlight >= raw.inFlight, 'a sampled count must not be reported below the raw sample')
+    // The distribution is relative; scaling it would not make it more accurate.
+    assert.equal(raw.perNode.size, scaled.perNode.size)
   })
 })

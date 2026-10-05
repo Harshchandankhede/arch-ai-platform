@@ -19,8 +19,14 @@ const Learning = lazy(() => import('./pages/Learning.jsx'))
 const Settings = lazy(() => import('./pages/Settings.jsx'))
 
 function Protected({ children }) {
-  const { isAuthed } = useApp()
+  const { isAuthed, authChecked } = useApp()
   const location = useLocation()
+
+  // Wait for the stored token to be verified before deciding anything. Redirecting on the
+  // first frame treated "not looked yet" as "signed out", so refreshing any page threw the
+  // user back to /login even though their session was valid. It has to block on a spinner
+  // for the one round-trip instead.
+  if (!authChecked) return <Loading label="Restoring your session…" />
   if (!isAuthed) return <Navigate to="/login" replace state={{ from: location.pathname }} />
   return children
 }

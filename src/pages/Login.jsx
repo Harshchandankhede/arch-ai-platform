@@ -1,17 +1,11 @@
 import { Component, Suspense, lazy, useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { ArrowRight, Info } from 'lucide-react'
+import { ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
 import { login, register } from '../services/auth.js'
-import { Button, Field, inputClass } from '../components/ui.jsx'
+import { Button, Field, Spinner, inputClass } from '../components/ui.jsx'
 
 const LandingScene = lazy(() => import('../features/three/LandingScene.jsx'))
-
-const DEMO = {
-  name: 'Aditi Sharma',
-  email: 'aditi.sharma@student.edu',
-  password: 'password123',
-}
 
 class SceneBoundary extends Component {
   constructor(props) {
@@ -77,16 +71,17 @@ function Hero() {
 
 export default function Login({ mode = 'login' }) {
   const isRegister = mode === 'register'
-  const { isAuthed } = useApp()
+  const { isAuthed, authChecked } = useApp()
   const dispatch = useDispatch()
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [name, setName] = useState(DEMO.name)
-  const [email, setEmail] = useState(DEMO.email)
-  const [password, setPassword] = useState(DEMO.password)
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
 
   async function onSubmit(event) {
     event.preventDefault()
@@ -117,6 +112,21 @@ export default function Login({ mode = 'login' }) {
   // meant a reload on /simulation bounced to the dashboard, whose auto-run pre-loaded a
   // cached result — so the Simulation page never presented its own empty state.
   const from = location.state?.from
+
+  // Until the stored token has been verified, isAuthed is false for a reason that is not
+  // "signed out". Rendering the form first would flash it at a user who still has a valid
+  // session, so hold on a spinner for that one round-trip.
+  if (!authChecked) {
+    return (
+      <div className="grid min-h-screen lg:grid-cols-2">
+        <Hero />
+        <div className="flex min-h-screen items-center justify-center px-5 py-12">
+          <Spinner label="Checking your session…" />
+        </div>
+      </div>
+    )
+  }
+
   if (isAuthed) {
     return <Navigate to={from && typeof from === 'string' ? from : '/dashboard'} replace />
   }
@@ -156,7 +166,7 @@ export default function Login({ mode = 'login' }) {
                   autoComplete="name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Aditi Sharma"
+                  placeholder="Your full name"
                 />
               </Field>
             )}
@@ -169,7 +179,7 @@ export default function Login({ mode = 'login' }) {
                 autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@student.edu"
+                placeholder="Enter your email"
               />
             </Field>
 
@@ -177,15 +187,26 @@ export default function Login({ mode = 'login' }) {
               label="Password"
               hint={isRegister ? 'At least 6 characters. Nothing leaves this browser.' : undefined}
             >
-              <input
-                className={inputClass}
-                type="password"
-                name="password"
-                autoComplete={isRegister ? 'new-password' : 'current-password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="password123"
-              />
+              <div className="relative">
+                <input
+                  className={`${inputClass} pr-10`}
+                  type={showPassword ? 'text' : 'password'}
+                  name="password"
+                  autoComplete={isRegister ? 'new-password' : 'current-password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Your password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showPassword}
+                  className="absolute top-1/2 right-2 flex -translate-y-1/2 cursor-pointer items-center justify-center text-ink-faint transition-colors hover:text-ink"
+                >
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
             </Field>
 
             {error && (
@@ -200,21 +221,7 @@ export default function Login({ mode = 'login' }) {
             </Button>
           </form>
 
-          <div className="mt-5 flex gap-2.5 rounded-[8px] border border-accent/40 bg-accent/10 p-3">
-            <Info size={15} className="mt-0.5 shrink-0 text-accent" />
-            <div>
-              <div className="font-mono text-[10.5px] tracking-widest text-accent uppercase">
-                Connected to Arch-AI API
-              </div>
-              <p className="mt-1 text-[12.5px] text-ink-dim">
-                Accounts are stored in MongoDB with a bcrypt-hashed password and authenticated by JWT.
-                Projects, simulation results and interview answers are still kept in this browser's
-                localStorage until those endpoints are wired.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-5 border-t border-line-soft pt-5 text-center text-[12.5px] text-ink-dim">
+<div className="mt-5 border-t border-line-soft pt-5 text-center text-[12.5px] text-ink-dim">
             {isRegister ? 'Already have a workspace?' : 'New to Arch-AI?'}{' '}
             <button
               type="button"

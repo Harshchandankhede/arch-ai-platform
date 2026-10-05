@@ -1,13 +1,14 @@
 import { Link } from 'react-router-dom'
-import { Award, Gauge, GitBranch, ShieldCheck, Workflow } from 'lucide-react'
+import { Award, Gauge as GaugeIcon, GitBranch, ShieldCheck, Workflow } from 'lucide-react'
 import { useApp } from '../store/AppContext.jsx'
 import { useResults } from '../store/useResults.js'
-import { dimensionMeta, dimensionOrder, scoreColor, utilizationColor } from '../theme/tokens.js'
+import { useCountUp } from '../lib/useCountUp.js'
+import { dimensionMeta, dimensionOrder, scoreColor } from '../theme/tokens.js'
 import {
   Badge,
   Card,
   Empty,
-  JsonPreview,
+  Gauge,
   PageHead,
   Spinner,
   UtilBar,
@@ -19,9 +20,6 @@ const linkBtn =
 
 const PAGE_DESC =
   'Six weighted dimensions are scored from objective simulation and mining evidence, then combined into a single health score. The table below is the full derivation, not a summary.'
-
-const FORMULA =
-  'Health Score = 0.25 x Performance + 0.20 x Scalability + 0.15 x Reliability + 0.15 x Security + 0.15 x Maintainability + 0.10 x ProcessEfficiency'
 
 function toPct(value) {
   const v = Number(value)
@@ -38,6 +36,11 @@ function grade(score) {
 export default function Evaluation() {
   const { currentProject } = useApp()
   const { evaluation, mining, sim, status, error } = useResults(currentProject?.arch)
+
+  // Sweeps up to the score like the old speedometer needle did. The number is the answer
+  // here, so the number itself is what moves. Declared at the top of the component, before
+  // the early returns, because a hook called after one would be conditional.
+  const scoreRef = useCountUp(evaluation ? Math.round(Number(evaluation.healthScore) || 0) : 0)
 
   if (!currentProject) {
     return (
@@ -149,7 +152,7 @@ export default function Evaluation() {
       detail: `${nodes.length} nodes and ${edges.length} edges. Node category, replica count, security placement and tier depth drive the structural dimensions.`,
     },
     {
-      icon: <Gauge size={14} />,
+      icon: <GaugeIcon size={14} />,
       title: 'Simulation metrics',
       detail: `Latency percentiles, success rate ${toPct(metrics.successRate).toFixed(1)}%, throughput ${(Number(metrics.throughputPerSec) || 0).toFixed(1)} req/s, peak utilisation, dropped and failed requests.`,
     },
@@ -174,10 +177,33 @@ export default function Evaluation() {
         actions={<Badge tone={verdict.tone}>{verdict.label}</Badge>}
       />
 
-      <div className="mb-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
-        <Card title="Health Score" sub="Weighted mean of the six dimension scores.">
-          <Gauge score={healthScore} size={240} />
-          <div className="mt-3 grid grid-cols-2 gap-3">
+      <div className="mb-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
+        {/* `items-start` was dropped from this grid: it left the shorter card floating at its
+            own height with a large dead gap underneath while its neighbour ran taller.
+            Default stretch makes both cards the same height. */}
+        <Card
+          title="Health Score"
+          sub="Weighted mean of the six dimension scores."
+          className="flex flex-col"
+          bodyClass="flex flex-1 flex-col p-5"
+        >
+          <div className="flex flex-1 items-center justify-center">
+            {/* The speedometer sweep and the number are driven by the same easing, so the
+                arc and the figure arrive together. */}
+            <Gauge score={healthScore} size={280} label="">
+              <span
+                ref={scoreRef}
+                className="font-mono text-[46px] leading-none font-bold tabular-nums"
+                style={{ color: scoreColor(healthScore) }}
+              >
+                {healthScore}
+              </span>
+              <span className="mt-1 block font-mono text-[10.5px] tracking-wider text-ink-faint uppercase">
+                out of 100 · {verdict.label}
+              </span>
+            </Gauge>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3">
             <div className="rounded-[8px] border border-line-soft bg-raised p-3">
               <div className="mb-1 font-mono text-[10.5px] tracking-wider text-ink-faint uppercase">
                 Strongest dimension
@@ -268,26 +294,9 @@ export default function Evaluation() {
             </tfoot>
           </table>
         </div>
-
-        <div className="rounded-[8px] border border-line bg-base-alt p-3.5">
-          <div className="mb-2 font-mono text-[10.5px] tracking-wider text-ink-faint uppercase">
-            Health score formula
-          </div>
-          <pre className="overflow-x-auto font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
-            {FORMULA}
-          </pre>
-          <pre className="mt-2 overflow-x-auto font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
-            {rows
-              .map((r) => `${r.weight.toFixed(2)} x ${r.score} = ${r.contribution.toFixed(2)}`)
-              .join('\n')}
-            {'\n'}
-            {`${contributionTotal.toFixed(2)} = weighted total · reported health score = ${healthScore} / 100`}
-          </pre>
-        </div>
       </Card>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <Card title="Where this came from" sub="The four inputs the evaluator reads.">
+      <Card title="Where this came from" sub="The four inputs the evaluator reads.">
           <div className="space-y-3">
             {inputs.map((item) => (
               <div key={item.title} className="flex gap-3 rounded-[8px] border border-line-soft bg-raised p-3">
@@ -299,33 +308,12 @@ export default function Evaluation() {
               </div>
             ))}
           </div>
-        </Card>
-
-        <Card title="Raw evaluation object" sub="The complete record cached by the simulation worker.">
-          <JsonPreview value={evaluation} maxHeight={420} />
-          <div className="mt-3 text-[12px] text-ink-faint">
-            Weights are normalised to sum to 1.00; the current set sums to {toPct(weightTotal).toFixed(0)}%.
-            Dimension scores are integers on a 0 to 100 scale produced by deterministic thresholded checks, not by
-            a model.
-          </div>
-          <div className="mt-3 space-y-1.5">
-            {rows.map((r) => (
-              <div key={r.key} className="flex items-center gap-2">
-                <span className="w-[132px] shrink-0 font-mono text-[11px] text-ink-faint">{r.label}</span>
-                <span className="w-[38px] shrink-0 font-mono text-[11px]" style={{ color: scoreColor(r.score) }}>
-                  {r.score}
-                </span>
-                <div className="h-1 flex-1 overflow-hidden rounded-full bg-overlay">
-                  <div
-                    className="h-full rounded-full"
-                    style={{ width: `${Math.max(0, Math.min(100, r.score))}%`, background: utilizationColor(r.score) }}
-                  />
-                </div>
-              </div>
-            ))}
+          <div className="mt-3.5 border-t border-line-soft pt-3 text-[12px] text-ink-faint">
+            Weights are normalised to sum to 1.00; the current set sums to{' '}
+            {toPct(weightTotal).toFixed(0)}%. Dimension scores are integers on a 0 to 100
+            scale produced by deterministic thresholded checks, not by a model.
           </div>
         </Card>
-      </div>
     </div>
   )
 }

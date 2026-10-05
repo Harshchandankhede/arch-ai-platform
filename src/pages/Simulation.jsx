@@ -1,6 +1,6 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, Boxes, CircleCheck, Gauge, Pause, Play, TrendingUp, Workflow } from 'lucide-react'
+import { Activity, Boxes, CircleCheck, Gauge, Pause, Play, RotateCcw, TrendingUp, Workflow } from 'lucide-react'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
 import { defaultWorkload, workloadPresets } from '../store/reducer.js'
 import { useResults } from '../store/useResults.js'
@@ -8,11 +8,14 @@ import { isClient } from '../data/nodeTypes.js'
 import { utilPct } from '../lib/metrics.js'
 import { buildTrajectories } from '../lib/trajectories.js'
 import { assessLoad } from '../lib/capacity.js'
-import ArchitectureFlow, {
-  FlowLegend,
-  FLOW_SPEEDS,
-  DEFAULT_SPEED,
-} from '../components/ArchitectureFlow.jsx'
+import ArchitectureFlow, { FlowLegend } from '../components/ArchitectureFlow.jsx'
+import {
+  resolveSpeed,
+  speedLabel,
+  WALL_CLOCK_TARGETS,
+  REAL_TIME,
+  DEFAULT_WALL_CLOCK,
+} from '../lib/playback.js'
 import { colors, utilizationColor } from '../theme/tokens.js'
 import {
   Badge,
@@ -25,13 +28,10 @@ import {
   RangeField,
   Spinner,
   StatCard,
-  Tabs,
   UtilBar,
   inputClass,
 } from '../components/ui.jsx'
 import { LatencyChart, MemoryChart, QueueChart } from '../components/charts.jsx'
-
-const TwinScene = lazy(() => import('../features/three/TwinScene.jsx'))
 
 const MEAN_LATENCY_S = 0.2
 const EVENT_ROWS = 40
@@ -70,26 +70,40 @@ export default function Simulation() {
   const dispatch = useDispatch()
   const arch = currentProject?.arch
   const { sim, status, error, run, runCapacity } = useResults(arch, { autoRun: false })
-  const [view, setView] = useState('2d')
-  const [flowSpeed, setFlowSpeed] = useState(DEFAULT_SPEED)
+  // How many real seconds the whole run should take while it animates.
+  const [wallClock, setWallClock] = useState(DEFAULT_WALL_CLOCK)
   const [capacity, setCapacity] = useState(null)
   const [capacityBusy, setCapacityBusy] = useState(false)
   const [lastSim, setLastSim] = useState(null)
   const [lastTrajectories, setLastTrajectories] = useState([])
-  const lastRunKey = useRef(null)
   // A completed run is kept visible while a newer one is being computed, so adjusting the
   // load never blanks the page back to the empty state.
   const shownSim = sim ?? lastSim
-  // `null` means "not overridden": the flow autoplays whenever a completed run exists, and
-  // only an explicit Pause sticks. Deriving it avoids a state write on every new result.
-  const [flowOverride, setFlowOverride] = useState(null)
-  const flowPlaying = flowOverride ?? Boolean(shownSim)
+  // The animation is NEVER automatic. It starts for exactly one reason: the user pressed
+  // Start Simulation and the engine result for that request came back. Opening the page
+  // with a cached result must not start anything by itself.
+  const [playRequested, setPlayRequested] = useState(false)
+  // Set by the Start button, consumed by the result effect. A ref, so pressing Start cannot
+  // itself trigger a render.
+  const runRequested = useRef(false)
+  const [flowDone, setFlowDone] = useState(false)
+  // Bumping this restarts playback from the beginning.
+  const [replayKey, setReplayKey] = useState(0)
+  const flowPlaying = playRequested && !flowDone
   // Written directly by the animation each frame, so the page never re-renders while it plays.
   const flowReadout = useRef(null)
+  const flowProgress = useRef(null)
 
   const arrivalRate = workload.arrivalRate ?? defaultWorkload.arrivalRate
   const duration = workload.duration ?? defaultWorkload.duration
   const seed = workload.seed ?? defaultWorkload.seed
+
+  // Speed is a pure function of the chosen target: the run always animates over exactly
+  // that many real seconds, whatever the arrival rate.
+  const flowSpeed = useMemo(
+    () => resolveSpeed({ durationSec: duration, wallClockSec: wallClock }),
+    [duration, wallClock],
+  )
 
   // Capacity depends only on the architecture, so measure it once per design rather than
   // on every workload tweak.
@@ -127,20 +141,25 @@ export default function Simulation() {
       setLastSim(sim)
       setLastTrajectories(flowTrajectories)
     }
+    // Start the animation only for a result the user actually asked for. This effect also
+    // runs on mount, where `sim` may already hold a cached result from an earlier session;
+    // without the ref check, opening the page would autoplay it.
+    if (!sim || !runRequested.current) return
+    runRequested.current = false
+    setFlowDone(false)
+    setPlayRequested(true)
+    setReplayKey((k) => k + 1)
   }, [sim, flowTrajectories])
 
-  // Live load: once a run exists, moving the arrival rate re-runs the engine after a short
-  // pause so the diagram keeps animating instead of stalling on the new workload.
-  const runKey = `${arrivalRate}|${duration}|${seed}`
-  useEffect(() => {
-    if (!sim) return undefined
-    if (runKey === lastRunKey.current) return undefined
-    const timer = setTimeout(() => {
-      lastRunKey.current = runKey
-      run()
-    }, 420)
-    return () => clearTimeout(timer)
-  }, [runKey, sim, run])
+  // Changing the workload does not run anything. It only edits the controls; the engine
+  // runs when the user presses Start Simulation. The previous version re-ran the engine on
+  // a 420 ms debounce, which meant results could appear without the user ever asking.
+  function startRun() {
+    runRequested.current = true
+    setFlowDone(false)
+    setPlayRequested(false)
+    run()
+  }
 
   const assessment = useMemo(
     () => assessLoad(capacity, arrivalRate, capacity?.latencyBudgetMs),
@@ -261,69 +280,100 @@ export default function Simulation() {
 
       <div className="mb-5 grid grid-cols-1 items-start gap-5 min-[1100px]:grid-cols-[2fr_320px]">
         <div className="min-w-0">
-          <Tabs
-            tabs={[
-              { key: '2d', label: '2D' },
-              { key: '3d', label: '3D · Digital Twin' },
-            ]}
-            value={view}
-            onChange={setView}
-          />
-          {view === '3d' ? (
-            <Card
-              title="Digital Twin"
-              sub="Interactive three-dimensional view of the same architecture and the same simulation result."
-            >
-              <div style={{ height: 460 }}>
-                <Suspense fallback={<Spinner label="Loading Digital Twin…" />}>
-                  <TwinScene architecture={arch} sim={sim} running={isRunning} />
-                </Suspense>
-              </div>
-            </Card>
-          ) : (
-            <Card
-              title="Architecture & live request flow"
-              sub="Dashes travel along each connection at the rate that connection actually carried traffic, measured from the run."
-              actions={
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <div className="flex items-center gap-0.5 rounded-[6px] border border-line-soft bg-raised p-0.5">
-                    {FLOW_SPEEDS.map((s) => (
-                      <button
-                        key={s.key}
-                        type="button"
-                        onClick={() => setFlowSpeed(s.key)}
-                        className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
-                          flowSpeed === s.key ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
-                        }`}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                  {shownSim ? (
+          <Card
+            title="Architecture & live request flow"
+            sub={`Dashes travel along each connection at the rate that connection actually carried traffic, measured from the run. Playback covers the ${duration} s workload and then stops.`}
+            actions={
+              <div className="flex flex-wrap items-center gap-1.5">
+                <div className="flex items-center gap-0.5 rounded-[6px] border border-line-soft bg-raised p-0.5">
+                  {WALL_CLOCK_TARGETS.map((s) => (
+                    <button
+                      key={s.key}
+                      type="button"
+                      onClick={() => setWallClock(s.key)}
+                      title={`Animate the whole run in ${s.label}`}
+                      className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
+                        wallClock === s.key ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setWallClock(REAL_TIME)}
+                    title="Animate at the rate the engine actually used"
+                    className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
+                      wallClock === REAL_TIME ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
+                    }`}
+                  >
+                    1:1
+                  </button>
+                </div>
+                {shownSim ? (
+                  flowDone ? (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => {
+                        setFlowDone(false)
+                        setPlayRequested(true)
+                        setReplayKey((k) => k + 1)
+                      }}
+                      icon={<RotateCcw size={13} />}
+                    >
+                      Replay
+                    </Button>
+                  ) : (
                     <Button
                       size="sm"
                       variant={flowPlaying ? 'default' : 'primary'}
-                      onClick={() => setFlowOverride(!flowPlaying)}
+                      onClick={() => setPlayRequested((v) => !v)}
                       icon={flowPlaying ? <Pause size={13} /> : <Play size={13} />}
                     >
-                      {flowPlaying ? 'Pause' : 'Play'}
+                      {flowPlaying ? 'Pause' : 'Resume'}
                     </Button>
-                  ) : null}
+                  )
+                ) : null}
+              </div>
+            }
+          >
+            <ArchitectureFlow
+              arch={arch}
+              components={viewSim?.components}
+              trajectories={shownTrajectories}
+              running={flowPlaying}
+              speed={flowSpeed}
+              durationSec={duration}
+              truncated={Boolean(viewSim?.truncated)}
+              sampleEvery={Number(viewSim?.loggingStats?.sampleEvery) || 1}
+              onComplete={() => setFlowDone(true)}
+              progressBarRef={flowProgress}
+              resetKey={replayKey}
+              readout={flowReadout}
+            />
+            {shownSim ? (
+              <>
+                <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-overlay">
+                  <div
+                    ref={flowProgress}
+                    className="h-full rounded-full bg-accent"
+                    style={{ width: '0%', transition: 'none' }}
+                  />
                 </div>
-              }
-            >
-              <ArchitectureFlow
-                arch={arch}
-                components={viewSim?.components}
-                trajectories={shownTrajectories}
-                running={flowPlaying}
-                speed={flowSpeed}
-                readout={flowReadout}
-              />
-              {shownSim ? <FlowLegend readoutRef={flowReadout} /> : null}
-            </Card>
-          )}
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 font-mono text-[10.5px] text-ink-faint">
+                  <span>{speedLabel(flowSpeed)}</span>
+                  <span>
+                    {flowDone ? 'Run complete' : `stops at ${duration} s`}
+                    {viewSim?.truncated
+                      ? ` · engine stopped early at ${((viewSim.simulatedMs || 0) / 1000).toFixed(0)} s (event budget)`
+                      : ''}
+                  </span>
+                </div>
+                <FlowLegend readoutRef={flowReadout} />
+              </>
+            ) : null}
+          </Card>
         </div>
 
         <div className="space-y-5">
@@ -404,17 +454,28 @@ export default function Simulation() {
               <Button
                 variant="primary"
                 className="w-full justify-center"
-                onClick={run}
+                onClick={startRun}
                 disabled={isRunning}
                 icon={isRunning ? <SpinnerIcon /> : <Play size={14} />}
               >
                 {isRunning ? 'Running…' : viewSim ? 'Run Simulation Again' : 'Start Simulation'}
               </Button>
-              <div className={`mt-2.5 font-mono text-[11.5px] ${hintTone}`}>{hint}</div>
+              <div className="mt-1 text-[11px] text-ink-faint">
+                Nothing runs on its own. This button runs the engine and then animates the
+                result for the duration set above.
+              </div>
+              <div className={`mt-2 font-mono text-[11.5px] ${hintTone}`}>{hint}</div>
             </div>
           </Card>
 
-          <Card title="Run configuration" sub="Read-only view of what the engine used.">
+          <Card
+            title="Run configuration"
+            sub={
+              viewSim
+                ? 'Exactly what the engine used for the run shown below.'
+                : 'What will be handed to the engine. Nothing has run yet.'
+            }
+          >
             <dl className="space-y-1.5 text-[12.5px]">
               {[
                 ['Mode', workload.mode || 'rate'],
@@ -422,7 +483,8 @@ export default function Simulation() {
                 ['Duration', `${duration} s`],
                 ['Seed', String(seed)],
                 ['Concurrent users', String(workload.concurrentUsers ?? '—')],
-                ['Reported concurrency', String(sim?.concurrentUsers ?? '—')],
+                // Engine-derived, so it stays pending until a run has actually happened.
+                ['Reported concurrency', sim ? String(sim.concurrentUsers) : 'awaiting first run'],
               ].map(([k, v]) => (
                 <div key={k} className="flex items-center justify-between gap-3">
                   <dt className="text-ink-faint">{k}</dt>
@@ -430,11 +492,18 @@ export default function Simulation() {
                 </div>
               ))}
             </dl>
+            {viewSim?.truncated ? (
+              <div className="mt-2.5 rounded-[7px] border border-amber/50 bg-amber/8 px-3 py-2 text-[12px]">
+                The engine&apos;s event budget stopped this run at{' '}
+                {((viewSim.simulatedMs || 0) / 1000).toFixed(0)} s, before the{' '}
+                {((Number(duration) || 0)).toFixed(0)} s requested.
+              </div>
+            ) : null}
           </Card>
 
           <Card
             title="Capacity"
-            sub="Measured by sweeping the engine upward until the design breaks."
+            sub="Sweeps the engine upward until the design breaks. Independent of the run above."
             actions={<Badge tone={verdictTone}>{verdictLabel}</Badge>}
           >
             {capacityBusy ? (

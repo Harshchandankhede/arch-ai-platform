@@ -1,5 +1,7 @@
+import { useEffect, useRef } from 'react'
 import { colors, scoreColor, severityColor, utilizationColor, withAlpha } from '../theme/tokens.js'
 import { useApp } from '../store/AppContext.jsx'
+import { usePrefersReducedMotion } from '../lib/useReducedMotion.js'
 
 export const inputClass =
   'w-full rounded-[7px] border border-line bg-raised px-3 py-2 text-[13.5px] text-ink outline-none focus:border-accent'
@@ -209,16 +211,63 @@ export function UtilBar({ value, label, right }) {
   )
 }
 
-export function Gauge({ score, label = 'Health Score', size = 220 }) {
+export function Gauge({ score, label = 'Health Score', size = 220, children, durationMs = 900 }) {
   const value = Math.max(0, Math.min(100, score ?? 0))
   const stroke = size * 0.075
   const radius = (size - stroke) / 2 - 6
   const circumference = Math.PI * radius
   const filled = (value / 100) * circumference
   const color = scoreColor(value)
+  const prefersReduced = usePrefersReducedMotion()
+  const arcRef = useRef(null)
+  // Fraction of the arc already drawn, so a retarget sweeps from where the needle stands
+  // rather than snapping back to zero.
+  const drawnRef = useRef(0)
+
+  // The arc is driven by hand rather than by a CSS transition. A transition cannot animate
+  // the first paint, because React writes the final stroke-dasharray on the very first
+  // frame, so the sweep has to start from an explicit 0 and be advanced frame by frame.
+  useEffect(() => {
+    const el = arcRef.current
+    if (!el) return undefined
+    const to = value / 100
+    const paint = (fraction) => {
+      el.setAttribute('stroke-dasharray', `${fraction * circumference} ${circumference}`)
+    }
+
+    if (prefersReduced || durationMs <= 0) {
+      drawnRef.current = to
+      paint(to)
+      return undefined
+    }
+
+    const from = drawnRef.current
+    if (Math.abs(from - to) < 1e-6) return undefined
+
+    let raf = 0
+    let startedAt = null
+    const step = (now) => {
+      if (startedAt === null) startedAt = now
+      const t = Math.min(1, (now - startedAt) / durationMs)
+      const eased = 1 - (1 - t) ** 3
+      const current = from + (to - from) * eased
+      paint(current)
+      if (t < 1) {
+        raf = requestAnimationFrame(step)
+      } else {
+        // Land exactly on target so repeated updates cannot accumulate rounding drift.
+        drawnRef.current = to
+        paint(to)
+      }
+    }
+
+    raf = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(raf)
+  }, [value, circumference, durationMs, prefersReduced])
+
   return (
     <div className="flex flex-col items-center justify-center">
-      <svg width={size} height={size * 0.62} viewBox={`0 0 ${size} ${size * 0.62}`} role="img" aria-label={`${label}: ${value} of 100`}>
+      <svg width={size} height={size * 0.62} viewBox={`0 0 ${size} ${size * 0.62}`} role="img" aria-label={`${label || 'Score'}: ${Math.round(value)} of 100`}>
         <path
           d={`M ${stroke / 2 + 6} ${size * 0.62 - 6} A ${radius} ${radius} 0 0 1 ${size - stroke / 2 - 6} ${size * 0.62 - 6}`}
           fill="none"
@@ -227,20 +276,24 @@ export function Gauge({ score, label = 'Health Score', size = 220 }) {
           strokeLinecap="round"
         />
         <path
+          ref={arcRef}
           d={`M ${stroke / 2 + 6} ${size * 0.62 - 6} A ${radius} ${radius} 0 0 1 ${size - stroke / 2 - 6} ${size * 0.62 - 6}`}
           fill="none"
           stroke={color}
           strokeWidth={stroke}
           strokeLinecap="round"
           strokeDasharray={`${filled} ${circumference}`}
-          style={{ transition: 'stroke-dasharray .6s ease' }}
         />
       </svg>
       <div className="-mt-[38%] text-center">
-        <div className="font-mono text-[34px] font-bold" style={{ color }}>
-          {Math.round(value)}
-        </div>
-        <div className="font-mono text-[10.5px] tracking-wider text-ink-faint uppercase">{label}</div>
+        {children ?? (
+          <div className="font-mono text-[34px] font-bold" style={{ color }}>
+            {Math.round(value)}
+          </div>
+        )}
+        {label ? (
+          <div className="font-mono text-[10.5px] tracking-wider text-ink-faint uppercase">{label}</div>
+        ) : null}
       </div>
     </div>
   )

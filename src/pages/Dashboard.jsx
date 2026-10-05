@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import {
   Activity,
   ArrowRight,
@@ -55,7 +55,7 @@ function Placeholder({ children }) {
 }
 
 export default function Dashboard() {
-  const { user, currentProject, settings } = useApp()
+  const { user, currentProject, settings, isAuthed, ownsProjects, hydrated } = useApp()
   const navigate = useNavigate()
   const arch = currentProject?.arch
   const { sim, mining, evaluation, recommendations, status, error, ready } = useResults(arch)
@@ -97,6 +97,25 @@ export default function Dashboard() {
   }, [recommendations])
 
   const firstName = String(user?.name || '').trim().split(/\s+/)[0] || 'there'
+
+  // Signed out: never render workspace data, even for a frame. `Protected` already
+  // redirects, but this is the check that keeps the guarantee local to the data itself.
+  if (!isAuthed) {
+    return <Navigate to="/login" replace />
+  }
+
+  // The account's projects are still loading, or the list on hand was not fetched for
+  // this account. Show a loader instead of another user's numbers.
+  if (!hydrated || !ownsProjects) {
+    return (
+      <div>
+        <PageHead eyebrow="Overview" title={`Welcome back, ${firstName}`} />
+        <Card>
+          <Spinner label="Loading your projects…" />
+        </Card>
+      </div>
+    )
+  }
 
   if (!currentProject) {
     return (

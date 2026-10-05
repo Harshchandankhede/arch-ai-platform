@@ -1,6 +1,6 @@
-// Reconstructs per-request trajectories from the simulation event log so the 2D view can
+﻿// Reconstructs per-request trajectories from the simulation event log so the 2D view can
 // replay what the engine actually did. Every timestamp, hop order and duration here is
-// read from the log — there is no synthetic or looping motion in this module.
+// read from the log â€” there is no synthetic or looping motion in this module.
 
 const ARRIVE = 'QUEUE_ENTER'
 const EXIT = 'QUEUE_EXIT'
@@ -129,8 +129,17 @@ export function locateAt(trajectory, t) {
   return null
 }
 
-/** Aggregate real counters for the replay position. Used for the live read-out. */
-export function statsAt(trajectories, t) {
+/**
+ * Aggregate real counters for the replay position. Used for the live read-out.
+ *
+ * `options.scale` is the engine's logging stride. The event log holds every Nth arrival so
+ * that it spans the whole run, which means a raw count of sampled cases understates the
+ * real concurrency by that factor. Multiplying the counters by the stride recovers a
+ * straight estimate of the true totals. `perNode` is deliberately NOT scaled: it is a
+ * distribution across components, and scaling it would not make it any more accurate.
+ */
+export function statsAt(trajectories, t, options = {}) {
+  const scale = Number.isFinite(options.scale) && options.scale > 0 ? options.scale : 1
   const perNode = new Map()
   let inFlight = 0
   let completed = 0
@@ -153,7 +162,15 @@ export function statsAt(trajectories, t) {
     }
   }
 
-  return { inFlight, completed, failed, dropped, perNode }
+  return {
+    inFlight: Math.round(inFlight * scale),
+    completed: Math.round(completed * scale),
+    failed: Math.round(failed * scale),
+    dropped: Math.round(dropped * scale),
+    // True when these counters are extrapolated from a sampled log rather than counted.
+    estimated: scale > 1,
+    perNode,
+  }
 }
 
 /**
@@ -201,73 +218,4 @@ export function nodeLoad(trajectories, at) {
     load.set(where.nodeId, (load.get(where.nodeId) || 0) + 1)
   }
   return load
-}
-
-/**
- * Pick the window of simulated time to replay, and where to wrap the loop.
- *
- * The busiest stretch is the most interesting, but wrapping there is jarring: every dot
- * in flight teleports from the end of the window back to its start. So the busiest slice
- * is located first, then the wrap point is nudged forward to the quietest moment just
- * before it. Replaying from that point looks continuous because no request is ever
- * interrupted by the loop.
- */
-export function chooseReplayWindow(trajectories, options = {}) {
-  const requested = Number.isFinite(options.windowMs) ? options.windowMs : 1200
-  if (!trajectories.length) return { start: 0, end: requested, concurrency: 0 }
-
-  const min = trajectories[0].start
-  const max = trajectories[trajectories.length - 1].end
-  if (max <= min) return { start: min, end: min + requested, concurrency: trajectories.length }
-
-  // The logged cases are a deterministic sample of the run, so their total span can be
-  // much shorter than the requested window. Clamping to the real span avoids returning a
-  // window that extends past the data (and a meaningless concurrency of -1).
-  const windowMs = Math.min(requested, max - min)
-
-  const inWindow = (start, end) => {
-    let count = 0
-    for (const traj of trajectories) {
-      if (traj.start < end && traj.end > start) count += 1
-    }
-    return count
-  }
-
-  const step = Math.max(1, windowMs / 20)
-  let bestStart = min
-  let bestCount = -1
-  for (let start = min; start + windowMs <= max; start += step) {
-    const count = inWindow(start, start + windowMs)
-    if (count > bestCount) {
-      bestCount = count
-      bestStart = start
-    }
-  }
-  if (bestCount < 0) {
-    bestCount = inWindow(min, min + windowMs)
-    bestStart = min
-  }
-
-  // Search a little way past the busiest slice for the quietest wrap point, so the loop
-  // restarts where the fewest requests are mid-journey.
-  const searchEnd = Math.min(max, bestStart + windowMs)
-  let quietest = bestStart
-  let quietestCount = inWindow(bestStart, bestStart + windowMs)
-  const quietStep = Math.max(1, windowMs / 40)
-  for (let start = bestStart; start <= searchEnd; start += quietStep) {
-    const count = inWindow(start, start + windowMs)
-    if (count < quietestCount) {
-      quietestCount = count
-      quietest = start
-    }
-  }
-
-  return {
-    start: quietest,
-    end: quietest + windowMs,
-    // Consistent with the returned start/end: how many requests actually overlap this
-    // replay window. peakConcurrency is the busiest count found while searching.
-    concurrency: quietestCount,
-    peakConcurrency: bestCount,
-  }
 }

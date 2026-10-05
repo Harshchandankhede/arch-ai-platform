@@ -11,7 +11,8 @@ import {
   inputClass,
 } from '../components/ui.jsx'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
-import { STORAGE_KEY, defaultSettings } from '../store/reducer.js'
+import { defaultSettings } from '../store/reducer.js'
+import { clearUserState, userStorageKey } from '../store/storage.js'
 import { logout } from '../services/auth.js'
 
 export default function Settings() {
@@ -55,8 +56,11 @@ export default function Settings() {
       setConfirmReset(true)
       return
     }
+    // Only this account's namespace is cleared. Every other account's preferences on
+    // this browser are left untouched.
     try {
-      localStorage.removeItem(STORAGE_KEY)
+      clearUserState(user?.id)
+      notify('Local preferences cleared')
     } catch {
       notify('Could not reach localStorage, reloading anyway', 'error')
     }
@@ -175,9 +179,13 @@ export default function Settings() {
             <Database size={15} className="mt-0.5 shrink-0 text-ink-faint" />
             <div className="min-w-0 flex-1">
               <p className="text-[12.5px] text-ink-dim">
-                All data lives in this browser&apos;s localStorage under{' '}
-                <code className="font-mono text-[12px] text-accent">{STORAGE_KEY}</code>. Nothing is sent
-                anywhere. Clearing your browser data also removes it.
+                Your projects are stored per account on the server and are only ever loaded
+                for the account you are signed in as. This browser keeps just your
+                preferences, under a key unique to you:{' '}
+                <code className="font-mono text-[12px] text-accent">
+                  {userStorageKey(user?.id) || 'archai.state.v1.u.&lt;your-id&gt;'}
+                </code>
+                . Clearing your browser data also removes it.
               </p>
               <div className="mt-2.5 flex flex-wrap items-center gap-2">
                 <Button

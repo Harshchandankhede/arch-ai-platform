@@ -17,7 +17,7 @@ import {
   User,
   Zap,
 } from 'lucide-react'
-import { edgeTraffic, chooseReplayWindow, locateAt, statsAt } from '../lib/trajectories.js'
+import { edgeTraffic, locateAt, statsAt } from '../lib/trajectories.js'
 import { colors, utilizationColor, withAlpha } from '../theme/tokens.js'
 
 export const CARD_W = 132
@@ -26,20 +26,9 @@ const GAP = 34
 const LABEL_H = 40
 const MAX_DOTS = 40
 
-// Playback speeds. Each step is a multiple of real time: 0.1 plays the run ten times
-// slower than the engine executed it, which is what makes an individual request traceable
-// as it hops between components.
-export const FLOW_SPEEDS = [
-  { key: 0.02, label: '0.02×' },
-  { key: 0.05, label: '0.05×' },
-  { key: 0.1, label: '0.1×' },
-  { key: 0.25, label: '0.25×' },
-  { key: 0.5, label: '0.5×' },
-  { key: 1, label: '1×' },
-  { key: 2, label: '2×' },
-]
-
-export const DEFAULT_SPEED = 0.25
+// Playback timing lives in lib/playback.js. It used to sit here as a bare 0.02x-2x
+// multiplier, which cannot express "play the whole run in N seconds".
+export { REAL_TIME, WALL_CLOCK_TARGETS, DEFAULT_WALL_CLOCK, resolveSpeed, speedLabel } from '../lib/playback.js'
 
 // Real measurements drive every visual: the dashes travel at the measured throughput on
 // that connection, the LOAD badge is the component's utilisation, CONN is how many requests
@@ -107,6 +96,18 @@ export default function ArchitectureFlow({
   trajectories = [],
   running = false,
   speed = 1,
+  // The configured workload duration in seconds. Playback covers exactly this span and
+  // then stops, instead of looping.
+  durationSec = 0,
+  // True when the engine stopped at its event budget before the duration elapsed.
+  truncated = false,
+  // The engine's logging stride. Counters read off the sampled log are multiplied by it so
+  // the live read-out reflects real concurrency instead of the sample size.
+  sampleEvery = 1,
+  onComplete,
+  // Direct DOM refs so the frame loop can paint progress without re-rendering the page.
+  progressBarRef,
+  resetKey = 0,
   readout,
 }) {
   const nodes = useMemo(() => arch?.nodes || [], [arch])
@@ -118,13 +119,25 @@ export default function ArchitectureFlow({
 
   const traffic = useMemo(() => edgeTraffic(trajectories), [trajectories])
 
-  // Replay the busiest part of the run, wrapping where traffic is thinnest so the loop does
-  // not visibly snap. The window shrinks at slow speeds so one loop always takes the same
-  // wall-clock time, which slows the motion down rather than stretching a long stretch.
-  const window = useMemo(() => {
-    const win = chooseReplayWindow(trajectories, { windowMs: Math.max(150, 8 * speed * 1000) })
-    return { ...win, span: Math.max(1, win.end - win.start) }
-  }, [trajectories, speed])
+  // The playback timeline is the configured workload duration, so the run stops exactly
+  // where the user asked it to. The one exception is a run the engine had to cut short at
+  // its event budget: replaying to the full duration there would leave a long empty tail,
+  // so the timeline ends with the data instead.
+  const timeline = useMemo(() => {
+    const configuredMs = Math.max(0, Number(durationSec) || 0) * 1000
+    if (!trajectories.length) {
+      return { start: 0, span: Math.max(1, configuredMs), coversRun: false }
+    }
+    const dataStart = trajectories[0].start
+    const dataEnd = trajectories[trajectories.length - 1].end
+    const useDataEnd = truncated && dataEnd < configuredMs - 1
+    const end = configuredMs > 0 ? (useDataEnd ? dataEnd : configuredMs) : dataEnd
+    return {
+      start: dataStart,
+      span: Math.max(1, end - dataStart),
+      coversRun: !(configuredMs > 0 && end < configuredMs - 1),
+    }
+  }, [trajectories, durationSec, truncated])
 
   // Hottest connection sets the dash speed so relative load between links is visible.
   const maxCount = useMemo(() => {
@@ -135,22 +148,49 @@ export default function ArchitectureFlow({
 
   const edgeRefs = useRef([])
   const dotRefs = useRef([])
+  // Playback position lives in a ref so changing speed, pausing or a new result can
+  // restart the effect without snapping the run back to zero.
+  const clockRef = useRef(0)
+  const finishedRef = useRef(false)
+
+  // A new run, or an explicit Replay, restarts from the beginning.
+  useEffect(() => {
+    clockRef.current = 0
+    finishedRef.current = false
+    // `progressBarRef` is a ref object owned by the parent, and the element it points at
+    // is only rendered once a result exists. Checking the ref object instead of its
+    // `current` threw a TypeError on first mount and took the whole page down.
+    if (progressBarRef?.current) progressBarRef.current.style.width = '0%'
+  }, [resetKey, timeline, progressBarRef])
 
   useEffect(() => {
     if (!running) return undefined
 
     let raf = 0
     let previous = performance.now()
-    let elapsed = 0
+    const { span, start } = timeline
+
+    const finish = () => {
+      // The completion callback flips parent state, which re-renders and re-runs this
+      // effect. Guard so the parent is told about the end of the run exactly once.
+      if (finishedRef.current) return
+      finishedRef.current = true
+      cancelAnimationFrame(raf)
+      onComplete?.()
+    }
 
     const tick = (now) => {
       const dt = Math.min(64, now - previous)
       previous = now
-      elapsed += dt * speed
+
+      // Clamp to the span rather than wrapping. `% span` is what made the run loop
+      // forever; the run must finish on the configured duration and then stop.
+      const elapsed = Math.min(span, clockRef.current + dt * speed)
+      clockRef.current = elapsed
+      const position = span > 0 ? elapsed / span : 1
 
       // Each connection's dashes advance in proportion to the traffic it actually carried,
       // so a busy link visibly streams and an idle one barely moves.
-      const { span } = window
       for (let i = 0; i < edgeRefs.current.length; i += 1) {
         const el = edgeRefs.current[i]
         if (!el) continue
@@ -158,11 +198,10 @@ export default function ArchitectureFlow({
         el.setAttribute('stroke-dashoffset', String(-elapsed * (6 + load * 90)))
       }
 
-      // Individual requests, positioned from their real hop timings. Fading near the loop
-      // edges keeps the wrap from looking like traffic teleporting backwards.
-      const position = (elapsed % span) / span
-      const edgeFade = Math.min(1, Math.min(position, 1 - position) / 0.06)
-      const at = window.start + position * span
+      // Individual requests, positioned from their real hop timings. Only the tail fades,
+      // so requests drain away as the run ends instead of blinking out at a wrap point.
+      const at = start + position * span
+      const edgeFade = position >= 1 ? 0 : Math.min(1, (1 - position) / 0.05)
 
       let slot = 0
       for (const traj of trajectories) {
@@ -205,10 +244,23 @@ export default function ArchitectureFlow({
       }
 
       if (readout?.current && slot > 0) {
-        const stats = statsAt(trajectories, at)
+        const stats = statsAt(trajectories, at, { scale: sampleEvery })
+        // Mark extrapolated numbers so a sampled count is never read as an exact one.
+        const approx = stats.estimated ? '~' : ''
         readout.current.textContent =
-          `in flight ${stats.inFlight} · completed ${stats.completed} · ` +
-          `failed ${stats.failed} · dropped ${stats.dropped}`
+          `t ${(at / 1000).toFixed(1)}s · in flight ${approx}${stats.inFlight.toLocaleString()} · ` +
+          `completed ${approx}${stats.completed.toLocaleString()} · ` +
+          `failed ${approx}${stats.failed.toLocaleString()} · dropped ${approx}${stats.dropped.toLocaleString()}`
+      }
+
+      // Progress is written straight to the DOM. Calling setState here would re-render the
+      // page on every frame.
+      if (progressBarRef?.current) progressBarRef.current.style.width = `${(position * 100).toFixed(2)}%`
+
+      // The run has reached the configured duration: stop for good.
+      if (elapsed >= span) {
+        finish()
+        return
       }
 
       raf = requestAnimationFrame(tick)
@@ -216,7 +268,7 @@ export default function ArchitectureFlow({
 
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [running, speed, trajectories, cards, window, readout])
+  }, [running, speed, trajectories, cards, timeline, readout, progressBarRef, onComplete, sampleEvery])
 
   const boxes = nodes.map((n) => cards.get(n.id))
   let viewBox = '0 0 900 460'

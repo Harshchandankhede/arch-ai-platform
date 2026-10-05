@@ -8,6 +8,9 @@ import { runSimulation } from '../src/lib/engine.js'
 import { strongArchitecture } from '../src/data/seedArchitectures.js'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
+// Assertions about what code does must ignore what comments say about it: this file
+// documents the abort mistake at length, and those words would otherwise match.
+const readCode = (p) => read(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
 
 describe('utilization units', () => {
   it('converts the engine 0-1 ratio into a 0-100 percentage', () => {
@@ -64,23 +67,62 @@ describe('utilization units', () => {
 })
 
 describe('session restore under StrictMode', () => {
-  it('hydration is guarded at module scope, not with a component ref', () => {
+  it('hydration is guarded by the token value, not a resettable flag', () => {
     const ctx = read('src/store/AppContext.jsx')
-    assert.match(ctx, /let hydrationState = 'idle'/)
+    // A 'idle' | 'running' | 'done' module latch is not a safe key: a hot reload
+    // re-evaluates the module and resets it while a token is still live, so the effect
+    // restarts, refetches /auth/me and re-dispatches LOGIN forever. That produced the
+    // repeated "GET /auth/me, GET /projects, GET /auth/me, ..." loop in the server log.
+    assert.match(ctx, /let hydratedToken = null/)
+    assert.doesNotMatch(ctx, /hydrationState/)
     assert.doesNotMatch(ctx, /hydrated\.current/, 'a ref latch is discarded by StrictMode cleanup')
+    assert.match(ctx, /if \(hydratedToken === token\) return undefined/)
+  })
+
+  it('does NOT abort the session request on cleanup', () => {
+    const code = readCode('src/store/AppContext.jsx')
+    // StrictMode fires a cleanup immediately after mount. Aborting there cancelled the only
+    // /auth/me request, while the token guard then refused to let the remount retry it, so
+    // `auth.checked` was never dispatched and the app hung on "Restoring your session…".
+    // The token guard already prevents duplicate requests, and `current()` discards a
+    // superseded result, so letting the request finish is both safe and necessary.
+    assert.doesNotMatch(code, /AbortController/)
+    assert.doesNotMatch(code, /controller\.abort/)
+    assert.doesNotMatch(code, /controller\.signal/)
+    assert.doesNotMatch(readCode('src/services/auth.js'), /fetchCurrentUser\(signal\)/)
+  })
+
+  it('clears the guard when the attempt did not complete', () => {
+    const ctx = read('src/store/AppContext.jsx')
+    // Otherwise a token that looks hydrated but never was blocks every future retry.
+    assert.match(ctx, /hydratedToken = null[\s\S]*?dispatch\(\{ type: 'LOGOUT' \}\)/)
   })
 
   it('hydration results are applied even after the effect cleanup runs', () => {
-    const ctx = read('src/store/AppContext.jsx')
+    const code = readCode('src/store/AppContext.jsx')
     // The old bug: `if (cancelled) return` after the await threw the /auth/me result away.
-    assert.doesNotMatch(ctx, /cancelled/)
-    assert.match(ctx, /if \(!current\(\)\) return/)
+    assert.doesNotMatch(code, /cancelled/)
+    assert.match(code, /if \(!current\(\)\) return/)
   })
 
-  it('a failed hydration can be retried', () => {
+  it('a new session is always allowed to hydrate', () => {
     const ctx = read('src/store/AppContext.jsx')
-    // The latch is reset on the failure paths and on session invalidation.
-    assert.match(ctx, /hydrationState = 'idle'/)
+    // Signing in issues a different token, so comparing token values cannot lock the app
+    // out of hydrating after a sign-out.
+    assert.match(ctx, /const token = tokenStore\.get\(\)/)
+    assert.match(ctx, /hydratedToken = token/)
+    // A 401 clears the token, so the guard has to forget the old session too.
+    assert.match(ctx, /hydratedToken = null[\s\S]*?dispatch\(\{ type: 'LOGOUT' \}\)/)
+  })
+
+  it('the app root does not import back out of useResults', () => {
+    // useResults already imports from AppContext. A cycle between them let the two modules
+    // observe each other mid-evaluation, which is how the hydration loop escaped.
+    const ctx = read('src/store/AppContext.jsx')
+    assert.doesNotMatch(ctx, /from '.*useResults/)
+    assert.match(ctx, /from '\.\/notificationSink\.js'/)
+    const sink = read('src/store/notificationSink.js')
+    assert.doesNotMatch(sink, /^import /m, 'the sink module must stay import-free')
   })
 })
 

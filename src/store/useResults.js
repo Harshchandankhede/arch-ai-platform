@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp, useDispatch } from './AppContext.jsx'
 import { archHash, toContract } from '../lib/contract.js'
+import { emitNotification } from './notificationSink.js'
 
 // The worker is module-scoped and deliberately outlives any single page. Previously
 // it was terminated on unmount, which silently discarded an in-flight run whenever
@@ -26,10 +27,36 @@ function onWorkerMessage(event) {
   if (type === 'RESULT') {
     if (key) cacheSink.current?.({ type: 'CACHE_RESULT', key, value: payload })
     setSharedStatus('done')
+    // A run can finish while the user is on another page, or on this one with the tab
+    // unfocused. Raising a bell notification means the result is still discoverable
+    // instead of silently landing in a cache nobody is looking at.
+    emitNotification({
+      title: 'Simulation finished',
+      body: summariseResult(payload),
+      tone: 'ok',
+      to: '/simulation',
+    })
   } else if (type === 'ERROR') {
     setSharedStatus('error', message)
     notifySink.current?.(message, 'error')
+    emitNotification({
+      title: 'Simulation failed',
+      body: message || 'The engine reported an error.',
+      tone: 'error',
+      to: '/simulation',
+    })
   }
+}
+
+/** One line describing what the run produced, for the notification body. */
+function summariseResult(payload) {
+  const m = payload?.sim?.metrics
+  if (!m) return 'The run finished and its results are ready.'
+  const health = payload?.evaluation?.healthScore
+  const parts = [`${Number(m.totalRequests || 0).toLocaleString()} requests`]
+  if (Number.isFinite(Number(health))) parts.push(`health ${Math.round(health)}/100`)
+  if (m.p95 !== undefined) parts.push(`p95 ${Math.round(Number(m.p95))} ms`)
+  return `${parts.join(' · ')}.`
 }
 
 // The reducer dispatch and toast notifier are read at message time, so a result

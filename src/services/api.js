@@ -36,7 +36,11 @@ function invalidateSession() {
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
-  timeout: 20000,
+  // Generous, because the slowest endpoint here is not ours: the Gemini advisor proxies a
+  // language-model call that legitimately takes 10-60s under load. At the old 20s the
+  // browser gave up first and reported "Request timed out. Is the backend running?" — which
+  // blamed the backend for a request the backend was still servicing.
+  timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS) || 120000,
 })
 
 api.interceptors.request.use((config) => {
@@ -55,7 +59,9 @@ api.interceptors.response.use(
     }
     const message =
       error.response?.data?.error?.message ||
-      (error.code === 'ECONNABORTED' ? 'Request timed out. Is the backend running?' : null) ||
+      (error.code === 'ECONNABORTED'
+        ? 'The server took too long to answer. The Gemini advisor can take a minute under load — try again.'
+        : null) ||
       (error.request && !error.response
         ? 'Cannot reach the backend. Make sure it is running on port 5000.'
         : null) ||
