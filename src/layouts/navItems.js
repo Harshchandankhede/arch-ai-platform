@@ -4,7 +4,10 @@ import {
   FileText,
   FolderKanban,
   GitBranch,
+  GitCompareArrows,
+  GraduationCap,
   LayoutDashboard,
+  MessagesSquare,
   Settings,
   Sparkles,
   Workflow,
@@ -37,7 +40,15 @@ export const navGroups = [
     label: 'Insights',
     items: [
       { to: '/recommendations', label: 'AI Recommendations', icon: Sparkles },
+      { to: '/comparison', label: 'Compare Architectures', icon: GitCompareArrows },
       { to: '/reports', label: 'Reports', icon: FileText },
+    ],
+  },
+  {
+    label: 'Learning',
+    items: [
+      { to: '/interview', label: 'Interview Prep', icon: MessagesSquare },
+      { to: '/learning', label: 'Learning Path', icon: GraduationCap },
     ],
   },
   {
