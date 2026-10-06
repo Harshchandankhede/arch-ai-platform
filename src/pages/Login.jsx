@@ -186,7 +186,9 @@ export default function Login({ mode = 'login' }) {
 
             <Field
               label="Password"
-              hint={isRegister ? 'At least 6 characters. Nothing leaves this browser.' : undefined}
+              // Wording corrected from "Nothing leaves this browser": the password is sent to the
+    // server on every sign-up and sign-in, and is stored only as a bcrypt hash.
+    hint={isRegister ? 'At least 6 characters. Stored as a bcrypt hash, never in plain text.' : undefined}
             >
               <div className="relative">
                 <input
