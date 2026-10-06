@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
 
+// Imported rather than read as source: the key these tests care about is produced by a
+// function, and asserting on the function's output survives refactors of how it is written.
+// storage.js touches localStorage only inside function bodies, so importing it here is safe.
+import { LEGACY_STORAGE_KEY, userStorageKey } from '../src/store/storage.js'
+
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 const ctx = read('src/store/AppContext.jsx')
@@ -9,7 +14,7 @@ const reducer = read('src/store/reducer.js')
 const storage = read('src/store/storage.js')
 const api = read('src/services/api.js')
 const auth = read('src/services/auth.js')
-const migrate = read('src/services/migrateLocalData.js')
+const loader = read('src/services/loadProjects.js')
 const dashboard = read('src/pages/Dashboard.jsx')
 const builder = read('src/pages/Builder.jsx')
 const comparison = read('src/pages/Comparison.jsx')
@@ -35,17 +40,23 @@ describe('BUG A — auth is never persisted separately from the token', () => {
   })
 
   it('the token and the per-user state blob are different keys', () => {
-    assert.match(api, /TOKEN_KEY\s*=\s*'archai\.token'/)
-    assert.match(storage, /const PREFIX = 'archai\.state\.v1'/)
-    assert.match(storage, /return id \? `\$\{PREFIX\}\.u\.\$\{id\}` : null/)
+    const stateKey = userStorageKey('6ac1b2')
+    assert.equal(LEGACY_STORAGE_KEY, 'archai.state.v1')
+    assert.ok(stateKey.startsWith('archai.state.v1.u.'), `unexpected state key: ${stateKey}`)
+    assert.ok(stateKey.endsWith('6ac1b2'), 'the state key must embed the user id')
+    // The token must not live under the preference namespace, or signing out of one account
+    // could disturb the other's stored session.
+    assert.notEqual(stateKey, 'archai.token')
+    assert.ok(!stateKey.includes('archai.token'))
   })
 })
 
 describe('project data is scoped to the signed-in account', () => {
   it('storage keys are namespaced per user id, never shared', () => {
-    assert.match(storage, /export function userStorageKey\(userId\)/)
-    const fn = storage.slice(storage.indexOf('export function userStorageKey'))
-    assert.match(fn.slice(0, fn.indexOf('\n}')), /\.u\./, 'the key must embed the user id')
+    assert.notEqual(userStorageKey('userA'), userStorageKey('userB'))
+    assert.match(userStorageKey('userA'), /userA$/)
+    assert.equal(userStorageKey(''), null, 'no user id means no key, not a shared one')
+    assert.equal(userStorageKey('   '), null)
   })
 
   it('nothing is persisted while signed out', () => {
@@ -109,9 +120,9 @@ describe('project data is scoped to the signed-in account', () => {
   it('a connectivity failure never substitutes a cached project list', () => {
     // The old fallback returned `local` projects here, which handed one account the
     // previous account's work whenever the backend was unreachable.
-    assert.match(migrate, /source:\s*'unauthorized'/)
-    assert.doesNotMatch(migrate, /source: 'local'/, 'a local list may belong to a different account')
-    assert.doesNotMatch(migrate, /migrateLocalProjects/, 'there is no local project list left to migrate')
+    assert.match(loader, /source:\s*'unauthorized'/)
+    assert.doesNotMatch(loader, /source: 'local'/, 'a local list may belong to a different account')
+    assert.doesNotMatch(loader, /migrateLocalProjects/, 'there is no local project list left to migrate')
   })
 
   it('the Dashboard gates on the session and on ownership before rendering data', () => {
@@ -207,7 +218,7 @@ describe('401 handling — handled once, no retry', () => {
   })
 
   it('the auth fallback distinguishes 401 from a connectivity failure', () => {
-    assert.match(migrate, /source:\s*'unauthorized'/)
+    assert.match(loader, /source:\s*'unauthorized'/)
   })
 
   it('errors never carry the Authorization header', () => {
@@ -260,7 +271,7 @@ describe('session restoration', () => {
   })
 
   it('hydration never writes projects while signed out', () => {
-    const tail = ctx.slice(ctx.indexOf('fetchProjectsWithFallback'))
+    const tail = ctx.slice(ctx.indexOf('fetchServerProjects'))
     assert.match(tail, /source === 'unauthorized'/)
     assert.match(tail, /isAuthenticated\(\) && projects/)
   })

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
 import { initFromStorage, loadPrefsFor, persistable, reducer } from './reducer.js'
 import { purgeLegacyState, writeUserState } from './storage.js'
-import { fetchProjectsWithFallback } from '../services/migrateLocalData.js'
+import { fetchServerProjects } from '../services/loadProjects.js'
 import { onSessionInvalidated } from '../services/api.js'
 import { isAuthenticated, fetchCurrentUser } from '../services/auth.js'
 import { tokenStore } from '../services/api.js'
@@ -127,7 +127,9 @@ export function AppProvider({ children }) {
         return
       }
 
-      const { projects, source } = await fetchProjectsWithFallback()
+      // Projects come from the backend only. Nothing local is consulted, so a browser left over
+      // from an earlier build cannot reintroduce projects that no longer exist server-side.
+      const { projects, source } = await fetchServerProjects()
       if (!current()) return
       if (source === 'unauthorized') {
         // After a 401 the session listener has already dispatched LOGOUT; writing

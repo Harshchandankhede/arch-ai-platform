@@ -5,7 +5,7 @@ import { describe, it } from 'node:test'
 import { initialState, reducer, initFromStorage, persistable } from '../src/store/reducer.js'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
-const migrateSrc = read('src/services/migrateLocalData.js')
+const loaderSrc = read('src/services/loadProjects.js')
 
 // These exercise the reducer directly rather than pattern-matching its source, because
 // the guarantee under test is behavioural: one account's projects must never survive into
@@ -141,21 +141,21 @@ describe('switching accounts in one browser', () => {
   })
 })
 
-describe('fetchProjectsWithFallback', () => {
+describe('fetchServerProjects', () => {
   it('never returns a cached project list on a connectivity failure', () => {
     // This used to `return { projects: local, source: 'local' }`, which handed the signed-in
     // user whatever the previous account had left in the shared blob.
-    assert.doesNotMatch(migrateSrc, /source: 'local'/)
-    assert.match(migrateSrc, /return \{ projects: null, source: 'error'/)
+    assert.doesNotMatch(loaderSrc, /source: 'local'/)
+    assert.match(loaderSrc, /return \{ projects: null, source: 'error'/)
   })
 
   it('still reports a 401 separately from a connectivity failure', () => {
-    assert.match(migrateSrc, /err\.status === 401 \|\| err\.status === 403/)
-    assert.match(migrateSrc, /source: 'unauthorized'/)
+    assert.match(loaderSrc, /err\.status === 401 \|\| err\.status === 403/)
+    assert.match(loaderSrc, /source: 'unauthorized'/)
   })
 
   it('has no local-project migration left to run', () => {
-    assert.doesNotMatch(migrateSrc, /export async function migrateLocalProjects/)
+    assert.doesNotMatch(loaderSrc, /export async function migrateLocalProjects/)
   })
 })
 
