@@ -102,8 +102,15 @@ export function reducer(state, action) {
               .join('')
               .slice(0, 2)
               .toUpperCase(),
-            role: action.role || 'student',
-          },
+role: action.role || 'student',
+        // Carried through rather than read back from settings, because the report profile is
+        // server-owned. Settings falls back to `name` when this is absent, so dropping it
+        // here made a saved display name silently revert to the login name on every load.
+        reportProfile: {
+          displayName: action.reportProfile?.displayName ?? '',
+          affiliation: action.reportProfile?.affiliation ?? '',
+        },
+      },
           demoMode: false,
           checked: true,
         },
@@ -143,6 +150,25 @@ export function reducer(state, action) {
     }
     case 'SET_PROFILE':
       return { ...state, settings: { ...state.settings, ...action.settings } }
+
+    // The report profile is server-owned, so a successful save updates the authenticated
+    // user rather than only the local settings mirror. Writing only to `settings` left the
+    // context holding the value the page was mounted with, so navigating away from Settings
+    // and back re-seeded the form from the stale copy and undid the save on screen.
+    case 'UPDATE_REPORT_PROFILE':
+      return {
+        ...state,
+        auth: {
+          ...state.auth,
+          user: {
+            ...state.auth.user,
+            reportProfile: {
+              displayName: action.displayName ?? '',
+              affiliation: action.affiliation ?? '',
+            },
+          },
+        },
+      }
     case 'SET_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.settings } }
 

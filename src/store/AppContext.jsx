@@ -105,7 +105,16 @@ export function AppProvider({ children }) {
 
       const userId = user.id
       const stillOurs = () => current() && isAuthenticated()
-      dispatch({ type: 'LOGIN', name: user.name, email: user.email, id: userId, role: user.role })
+      dispatch({
+        type: 'LOGIN',
+        name: user.name,
+        email: user.email,
+        id: userId,
+        role: user.role,
+        // Without this the reducer stored a user object with no reportProfile, and Settings
+        // fell back to the login name on every load even though the server held a saved one.
+        reportProfile: user.reportProfile,
+      })
       // Preferences live under this user's key, so they can only be read now that the
       // account is known.
       dispatch({ type: 'LOAD_PREFS', prefs: loadPrefsFor(userId) })

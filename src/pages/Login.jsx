@@ -98,6 +98,7 @@ export default function Login({ mode = 'login' }) {
         email: result?.email,
         id: result?.id,
         role: result?.role,
+        reportProfile: result?.reportProfile,
       })
       const from = location.state?.from
       navigate(from && typeof from === 'string' ? from : '/dashboard', { replace: true })

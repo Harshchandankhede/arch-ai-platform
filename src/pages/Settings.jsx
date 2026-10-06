@@ -51,12 +51,13 @@ export default function Settings() {
       // keep showing whitespace or casing the database did not accept.
       setDisplayName(updated?.reportProfile?.displayName ?? displayName.trim())
       setAffiliation(updated?.reportProfile?.affiliation ?? affiliation.trim())
+      // Update the authenticated user, which is what the form re-seeds from. Dispatching
+      // SET_PROFILE here only touched the local settings mirror and left the context
+      // holding the pre-save value.
       dispatch({
-        type: 'SET_PROFILE',
-        settings: {
-          name: updated?.reportProfile?.displayName ?? displayName.trim(),
-          affiliation: updated?.reportProfile?.affiliation ?? '',
-        },
+        type: 'UPDATE_REPORT_PROFILE',
+        displayName: updated?.reportProfile?.displayName ?? displayName.trim(),
+        affiliation: updated?.reportProfile?.affiliation ?? '',
       })
       notify('Report profile saved')
     } catch (err) {
