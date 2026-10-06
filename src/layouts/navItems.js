@@ -4,10 +4,7 @@ import {
   FileText,
   FolderKanban,
   GitBranch,
-  GitCompareArrows,
-  GraduationCap,
   LayoutDashboard,
-  MessagesSquare,
   Settings,
   Sparkles,
   Workflow,
@@ -18,6 +15,11 @@ import {
  *
  * It lives apart from AppLayout so the topbar search can index the same list. Duplicating it
  * would let the two drift, and the search would quietly stop finding pages.
+ *
+ * Compare Architectures, Interview Prep and Learning Path are deliberately absent. Their
+ * routes, pages, components and state are all still present and reachable by URL; only the
+ * navigation entries were withdrawn while they sit outside the current scope. Restoring them
+ * means re-adding the entries below plus their three lucide icon imports.
  */
 export const navGroups = [
   {
@@ -40,15 +42,7 @@ export const navGroups = [
     label: 'Insights',
     items: [
       { to: '/recommendations', label: 'AI Recommendations', icon: Sparkles },
-      { to: '/comparison', label: 'Compare Architectures', icon: GitCompareArrows },
       { to: '/reports', label: 'Reports', icon: FileText },
-    ],
-  },
-  {
-    label: 'Learning',
-    items: [
-      { to: '/interview', label: 'Interview Prep', icon: MessagesSquare },
-      { to: '/learning', label: 'Learning Path', icon: GraduationCap },
     ],
   },
   {

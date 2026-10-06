@@ -159,6 +159,14 @@ test.describe('two browsers, two accounts', () => {
 })
 
 test.describe('sidebar navigation', () => {
+  // Pages withdrawn from the sidebar but deliberately kept in the app. Hidden, not deleted.
+  // The heading each one renders is part of the contract being asserted here.
+  const HIDDEN_FROM_NAV = [
+    { label: 'Compare Architectures', path: '/comparison', heading: 'Architecture Comparison' },
+    { label: 'Interview Prep', path: '/interview', heading: 'AI Interview Practice' },
+    { label: 'Learning Path', path: '/learning', heading: 'Learning Progress' },
+  ]
+
   test('every sidebar page is reachable and keeps the session', async ({ page }) => {
     await register(page)
 
@@ -170,10 +178,7 @@ test.describe('sidebar navigation', () => {
       ['Process Mining', /\/process-mining$/],
       ['Evaluation & Score', /\/evaluation$/],
       ['AI Recommendations', /\/recommendations$/],
-      ['Compare Architectures', /\/comparison$/],
       ['Reports', /\/reports$/],
-      ['Interview Prep', /\/interview$/],
-      ['Learning Path', /\/learning$/],
       ['Settings', /\/settings$/],
     ]
 
@@ -183,6 +188,35 @@ test.describe('sidebar navigation', () => {
       await link.click()
       await expect(page).toHaveURL(path)
       await expectSignedIn(page)
+    }
+  })
+
+  test('the withdrawn pages are absent from the sidebar', async ({ page }) => {
+    await register(page)
+    const sidebar = page.locator('nav')
+
+    for (const { label } of HIDDEN_FROM_NAV) {
+      await expect(sidebar.getByRole('link', { name: label })).toHaveCount(0)
+    }
+    // The Learning group existed only to hold those two entries, so it goes with them.
+    await expect(sidebar.getByText('Learning', { exact: true })).toHaveCount(0)
+  })
+
+  test('the withdrawn pages still work when opened directly by URL', async ({ page }) => {
+    await register(page)
+    // A project is created first on purpose: Comparison renders an "Empty" card rather than
+    // a page heading when no project is open, so without one this could not tell "route
+    // missing" apart from "route correctly showing its empty state".
+    await createProject(page, 'Hidden Page Target')
+
+    for (const { path, heading } of HIDDEN_FROM_NAV) {
+      await page.goto(path)
+      // A missing route falls through to the catch-all and lands on /dashboard, so the URL
+      // staying put is what proves the route still exists.
+      await expect(page).toHaveURL(new RegExp(`${path}$`))
+      await expectSignedIn(page)
+      // And the page renders its own content rather than the catch-all redirect.
+      await expect(page.locator('main').getByRole('heading', { name: heading })).toBeVisible()
     }
   })
 })
