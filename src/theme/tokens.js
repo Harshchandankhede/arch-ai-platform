@@ -59,6 +59,20 @@ export function utilizationColor(utilization) {
   return colors.green
 }
 
+/**
+ * Colour for a completed-request ratio.
+ *
+ * The Simulation page previously hard-coded green for Success Rate, so a run that dropped
+ * 60% of its requests was displayed in the same colour as a flawless one. Thresholds mirror
+ * the ones used in `utilizationColor`: anything under 95% is a problem, and the amber band
+ * exists so a run that is merely untidy is distinguishable from one that is failing.
+ */
+export function successRateColor(rate) {
+  if (rate >= 99.5) return colors.green
+  if (rate >= 95) return colors.accent
+  return colors.red
+}
+
 export const dimensionMeta = {
   performance: { label: 'Performance', weight: 0.25 },
   scalability: { label: 'Scalability', weight: 0.2 },

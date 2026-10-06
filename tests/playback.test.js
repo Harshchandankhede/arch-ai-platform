@@ -177,7 +177,27 @@ describe('nothing runs or animates without the user asking', () => {
     // read back out of the cache.
     assert.match(page, /const runRequested = useRef\(false\)/)
     assert.match(page, /if \(!sim \|\| !runRequested\.current\) return/)
-    assert.match(page, /runRequested\.current = false[\s\S]*?setPlayRequested\(true\)/)
+    // Was setPlayRequested(true). Now gated on the reader's motion preference: a run still
+    // completes and reports its metrics, but the diagram stays still unless asked.
+    assert.match(page, /runRequested\.current = false[\s\S]*?setPlayRequested\(!reducedMotion\)/)
+  })
+
+  it('reduced motion is honoured and still leaves playback available', () => {
+    assert.match(page, /usePrefersReducedMotion\(\)/)
+    // The choice is offered rather than removed, so nothing is taken away from the reader.
+    assert.match(page, /Press\s+Play to animate it anyway/)
+  })
+
+  it('exposes keyboard playback without hijacking form input', () => {
+    assert.match(page, /Space plays or pauses · R replays/)
+    // Guarded, so pressing space in the seed field types a space instead of toggling.
+    assert.match(page, /tag === 'INPUT' \|\| tag === 'TEXTAREA' \|\| tag === 'SELECT'/)
+  })
+
+  it('labels the playback control as a duration, not a speed', () => {
+    assert.match(page, /role="radiogroup"/)
+    assert.match(page, /Playback length for the whole run/)
+    assert.match(page, />play in</)
   })
 
   it('the Start button arms playback and runs the engine in one click', () => {
@@ -206,27 +226,38 @@ describe('nothing runs or animates without the user asking', () => {
 
 describe('Run configuration and Capacity stay in the UI', () => {
   it('both cards are still rendered', () => {
-    assert.match(page, /title="Run configuration"/)
-    assert.match(page, /title="Capacity"/)
+    // Renamed from "Run configuration" and "Capacity": the first listed the same three
+    // values as the editable Workload panel and read as a duplicate of it, and the second
+    // sounded like a number rather than a sweep. The assertions follow the new titles.
+    assert.match(page, /title="What the engine used"/)
+    assert.match(page, /title="Capacity analysis"/)
   })
 
-  it('Run configuration says plainly when nothing has run yet', () => {
-    assert.match(page, /Nothing has run yet\./)
+  it('the run panel says plainly when nothing has run yet', () => {
+    assert.match(page, /Nothing has run yet/)
     assert.match(page, /'awaiting first run'/)
   })
 
-  it('Run configuration discloses a run the engine cut short', () => {
+  it('the run panel discloses a run the engine cut short', () => {
     assert.match(page, /event budget stopped this run/)
   })
 
   it('Capacity states that it is independent of the run', () => {
-    assert.match(page, /Independent of the run above\./)
+    assert.match(page, /Independent of the run\./)
   })
 
   it('Capacity still shows busy, result and failure states', () => {
     assert.match(page, /capacityBusy \?/)
     assert.match(page, /capacity\?\.ok \?/)
     assert.match(page, /capacity\?\.reason \|\| 'Capacity has not been measured for this architecture\.'/)
+  })
+
+  it('Capacity collapses by default but keeps its verdict visible', () => {
+    // The sweep is slower than the run and is not part of it, so its detail starts hidden.
+    // The conclusion it produces is surfaced in the run summary, so nothing is lost.
+    assert.match(page, /const \[capacityOpen, setCapacityOpen\] = useState\(false\)/)
+    assert.match(page, /aria-expanded=\{capacityOpen\}/)
+    assert.match(page, /The verdict is shown in the run summary above\./)
   })
 })
 
