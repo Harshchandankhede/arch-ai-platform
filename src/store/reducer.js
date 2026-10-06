@@ -1,4 +1,5 @@
 import { readUserState } from './storage.js'
+import { storeSummary } from '../lib/simSummary.js'
 
 export const workloadPresets = [
   { label: '100 concurrent users', concurrentUsers: 100 },
@@ -36,8 +37,11 @@ export const initialState = {
   projectsOwnerId: null,
   currentProjectId: null,
   hydrated: false,
-  workload: defaultWorkload,
-  simCache: {},
+workload: defaultWorkload,
+    simCache: {},
+    // Compact records of completed runs, keyed by project and configuration, so a reload
+    // does not discard the figures. Contains no event log and no project data.
+    simSummaries: {},
   interview: { history: [], log: [], index: 0 },
   settings: defaultSettings,
   // In-memory only, and deliberately not persisted: a notification about a run that
@@ -60,6 +64,10 @@ export function loadPrefsFor(userId) {
     workload: { ...defaultWorkload, ...(stored.workload || {}) },
     interview: { ...initialState.interview, ...(stored.interview || {}) },
     settings: { ...defaultSettings, ...(stored.settings || {}) },
+    // Compact run summaries, so a reload does not throw away the figures a run just
+    // produced. Namespaced by account like every other preference, and holding no project
+    // data: it is a record of a run, not a project.
+    simSummaries: stored.simSummaries && typeof stored.simSummaries === 'object' ? stored.simSummaries : {},
   }
 }
 
@@ -72,6 +80,9 @@ export function persistable(state) {
     workload: state.workload,
     interview: state.interview,
     settings: state.settings,
+    // A run summary, not a project. Holds metrics and chart series only, keyed by project id
+    // and the exact configuration that produced it.
+    simSummaries: state.simSummaries,
   }
 }
 
@@ -146,8 +157,27 @@ role: action.role || 'student',
         workload: { ...state.workload, ...(prefs.workload || {}) },
         interview: { ...state.interview, ...(prefs.interview || {}) },
         settings: { ...state.settings, ...(prefs.settings || {}) },
+        simSummaries: prefs.simSummaries && typeof prefs.simSummaries === 'object' ? prefs.simSummaries : {},
       }
     }
+
+    // Written by the Simulation page when a run completes, and read back on a reload so the
+    // figures survive a refresh. The merge happens here rather than in the page: the effect
+    // that triggers it cannot then depend on the map it writes, which otherwise produced a
+    // new object on every dispatch and re-ran the effect forever.
+    case 'STORE_SIM_SUMMARY':
+      return {
+        ...state,
+        simSummaries: storeSummary(
+          state.simSummaries,
+          action.projectId,
+          action.resultKey,
+          action.sim,
+          action.now,
+        ),
+      }
+    case 'CLEAR_SIM_SUMMARIES':
+      return { ...state, simSummaries: {} }
     case 'SET_PROFILE':
       return { ...state, settings: { ...state.settings, ...action.settings } }
 

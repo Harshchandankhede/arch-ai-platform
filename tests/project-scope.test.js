@@ -46,7 +46,9 @@ describe('initFromStorage', () => {
 describe('persistable', () => {
   it('excludes projects, auth and the current selection', () => {
     const saved = persistable(signedInState([owned('p1', 'userA')], 'userA'))
-    assert.deepEqual(Object.keys(saved).sort(), ['interview', 'settings', 'workload'])
+    // simSummaries was added so a reload keeps a run's figures. It is a record of a run, not
+    // project data: see tests/sim-summary.test.js for what it is forbidden to contain.
+    assert.deepEqual(Object.keys(saved).sort(), ['interview', 'settings', 'simSummaries', 'workload'])
   })
 })
 

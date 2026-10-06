@@ -11,7 +11,6 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 const ctx = read('src/store/AppContext.jsx')
 const reducer = read('src/store/reducer.js')
-const storage = read('src/store/storage.js')
 const api = read('src/services/api.js')
 const auth = read('src/services/auth.js')
 const loader = read('src/services/loadProjects.js')

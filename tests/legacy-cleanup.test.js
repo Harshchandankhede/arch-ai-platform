@@ -267,9 +267,28 @@ describe('the app has no browser-project migration left', () => {
       simCache: {},
     })
 
-    assert.deepEqual(Object.keys(saved).sort(), ['interview', 'settings', 'workload'])
+    assert.deepEqual(Object.keys(saved).sort(), ['interview', 'settings', 'simSummaries', 'workload'])
     assert.equal(saved.projects, undefined)
     assert.equal(saved.currentProjectId, undefined)
     assert.equal(saved.auth, undefined)
+  })
+
+  it('persisting run summaries does not reintroduce project data', async () => {
+    // The run summary exists so results survive a reload. It must never become a way for
+    // project data to reach the browser again, which is what Phase 7 removed.
+    const { toSimDigest } = await import('../src/lib/simSummary.js')
+    const digest = toSimDigest({
+      metrics: { p50: 1, totalRequests: 2 },
+      components: { a: { id: 'a', utilization: 0.1 } },
+      eventLog: [{ eventId: 'e1', caseId: 'c1', activity: 'arrive' }],
+      latencySeries: [],
+      queueSeries: [],
+      arrivalRate: 10,
+      duration: 20,
+      seed: 1,
+    })
+    assert.equal(digest.eventLog, undefined, 'the event log must never be stored')
+    assert.equal(digest.projects, undefined)
+    assert.doesNotMatch(JSON.stringify(digest), /"name":|"nodes":|"arch"/)
   })
 })
