@@ -8,6 +8,9 @@
     "build": "vite build",
     "lint": "oxlint",
     "test": "node --test tests/*.test.js",
+    "test:integration": "node tests/integration/run.mjs",
+    "test:e2e": "playwright test",
+    "test:all": "npm test && npm run test:integration && npm run test:e2e",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -22,6 +25,7 @@
     "three": "^0.186.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
