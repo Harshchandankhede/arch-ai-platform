@@ -2,7 +2,15 @@ import axios from 'axios'
 
 const TOKEN_KEY = 'archai.token'
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api'
+// Relative by default, resolved by the browser against the page origin.
+//
+// It used to fall back to an absolute http://localhost:5000/api, and that literal was
+// compiled into the production bundle: a deployed build then asked the visitor's own
+// machine for the API instead of the server hosting the page. Going through a same-origin
+// /api also means development no longer depends on the backend's CORS allowlist — Vite
+// proxies it in dev and in preview.
+// VITE_API_BASE_URL is only needed when the API genuinely lives on another origin.
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 
 export const tokenStore = {
   get: () => localStorage.getItem(TOKEN_KEY),
