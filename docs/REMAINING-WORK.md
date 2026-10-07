@@ -1,7 +1,7 @@
 # Arch-AI — Remaining Work Plan
 
-Status as of end of session. Phases 0–5 are complete, verified and **uncommitted**.
-Work resumes here tomorrow, one phase at a time, with nothing committed until you say so.
+Updated at the end of the Simulation work. Everything listed as done below is committed and
+pushed to `origin/main`.
 
 ## Where things stand
 
@@ -9,112 +9,95 @@ Work resumes here tomorrow, one phase at a time, with nothing committed until yo
 |---|---|---|
 | 0 | Data inventory + test-account cleanup | Done |
 | 1 | Durable project persistence (autosave, duplicate, delete) | Done |
+| 2 | Legacy browser-data migration — **retired**, not migrated | Done |
 | 3 | Server-side report profile | Done |
 | 4 | Two-account integration suite (disposable DB) | Done |
 | 5 | Frontend↔backend integration + browser E2E | Done |
-| 2 | Legacy browser-data migration | **Not started** |
-| 6 | Documentation | **Not started** |
-| 7 | Deployment | **Not started** |
+| 6 | Simulation page: presentation, accessibility, result persistence | Done |
+| 7 | Documentation | Done |
+| — | Deployment | **Not started** |
+| — | Research write-up groundwork | **Not started** |
 
-Verification totals: unit 314/314 · integration 61/61 · E2E 30/30 · build clean · lint clean.
+Verification totals: **unit 363/363 · integration 61/61 · E2E 49/49 · build clean · lint clean.**
 
----
+### Decisions taken, for the record
 
-## Phase 6 — Commit the verified work (do this first)
-
-Everything from Phases 1–5 is sitting uncommitted across 14 files. It should be committed
-before new work starts, otherwise tomorrow's changes blend into an unreviewable diff.
-
-Suggested sequence, one commit per phase so each is independently revertible:
-
-1. `feat: run integration and browser test suites against a disposable database`
-2. `feat: proxy the API in dev and make its base URL configurable`
-3. `fix: carry reportProfile from the API response into app state`
-4. `fix: correct the password storage hint on the sign-up form`
-5. `feat: expose comparison, interview and learning pages in the sidebar`
-
-Before the first commit: secret-scan the diff, confirm no `.env`, no traces, no
-`test-results/`, and re-run the full gate.
+- **Old browser projects are not migrated.** They were sample and test data. Any `projects`
+  field in a legacy localStorage blob is stripped on read, on write and at startup, while the
+  preferences in the same blob survive. The JWT lives under a different key and is never touched.
+- **Comparison, Interview Prep and Learning Path are hidden, not deleted.** Routes, pages and
+  state remain; only the sidebar entries were withdrawn.
+- **Run comparison (Pass 4) was deliberately skipped**, so there is no side-by-side view of
+  two runs. `Comparison.jsx` still compares two *versions of one project*, reached by URL.
+- **The Gemini advisor has never been exercised end-to-end.** `playwright.config.js` sets
+  `GEMINI_API_KEY: ''`, so every test skips the AI arm by design.
 
 ---
 
-## Phase 7 — Legacy browser-data migration (the original Phase 2)
+## Phase 8 — Close the test coverage gaps (highest value)
 
-The only functional gap left from the earlier plan. `src/services/migrateLocalData.js`
-still exists and is the remaining consumer of the old shared
-`archai.state.v1` localStorage key.
+Route-by-route status of the browser suite:
 
-Decisions needed before implementing:
+| Route | Coverage |
+|---|---|
+| `/login` `/register` `/projects` `/builder` `/settings` | Real journeys |
+| `/simulation` | Real journeys |
+| `/evaluation` `/comparison` `/interview` `/learning` | URL only — proven to render, never exercised |
+| `/dashboard` `/process-mining` `/recommendations` `/reports` | **None** |
 
-- Which local projects, if any, get claimed by the account signing in first.
-- Whether migration is offered or automatic. Automatic is riskier: it silently attaches
-  whatever the browser holds to whichever account arrives first.
-- Whether to migrate project data at all, or only preferences, given projects are now
-  server-owned.
+Process Mining and Evaluation are the academic core of the project and a regression there
+would ship silently today.
 
-Once resolved: implement, add tests, verify against a browser with pre-seeded localStorage,
-and confirm a second account on the same browser never sees migrated projects.
-
----
-
-## Phase 8 — Documentation
-
-- Rewrite `README.md`, which is currently outdated. Must cover: prerequisites, the two
-  `.env` files, `npm run dev` in both `backend/` and the root, and the three test commands
-  (`test`, `test:integration`, `test:e2e`).
-- Document the disposable-database convention and why `dropDatabase` is unavailable on the
-  current Atlas role.
-- Document `VITE_API_BASE_URL` and when a deployment actually needs it.
-- Add per-phase notes as needed for the write-up.
+Known constraint: `/process-mining` consumes the simulation **event log**, which is
+deliberately not persisted. Its journey test must therefore simulate and mine within one page
+session rather than across a reload.
 
 ---
 
-## Phase 9 — Deployment
+## Phase 9 — Deployment (nothing is live)
 
-Nothing is deployed yet. The blocker found and fixed in Phase 5 was that the production
-bundle hardcoded `http://localhost:5000/api`; that is now a relative `/api`, so a static
-host plus a reverse proxy works.
+The production bundle uses a relative `/api`, so a static host plus a reverse proxy works.
+Still required:
 
-Needs a decision: **where to host** (the options being Render for the Node backend plus a
-static host for the frontend, versus a single VPS with nginx). This drives everything else.
-
-Then:
-
-- Provision the production MongoDB Atlas cluster (the current one is the dev database).
-- Generate production secrets. `JWT_SECRET` and `MONGO_URI` must be new values; the
-  throwaway keys in the test config are not secrets.
-- Configure the frontend build with `VITE_API_BASE_URL` pointing at the deployed API.
-- Verify CORS origins match the deployed frontend origin.
-- Smoke-test the deployed stack: register, create a project, reload, confirm persistence.
+1. **Choose a host** — Render for the Node API plus a static host for the frontend, or one
+   VPS with nginx. Everything else follows from this.
+2. Provision a **production MongoDB Atlas cluster**. Only the dev cluster exists.
+3. Generate **production** `JWT_SECRET` and `MONGO_URI`. The values in test config are
+   throwaways by design.
+4. Set `VITE_API_BASE_URL` at build time **only** if the API is cross-origin, and add the
+   frontend origin to the backend CORS allowlist.
+5. Smoke-test the deployed stack: register → create project → reload → confirm persistence.
 
 ---
 
 ## Phase 10 — Research write-up groundwork
 
+Do this while the development data is intact; it is the only copy.
+
 - Collect the experimental evidence: health scores, bottleneck and deviation findings,
   process-mining results, before/after comparisons.
-- Decide and document the evaluation methodology.
-- Note that AI-labelled contributions must be declared; the Gemini advisor arm is
-  externally generated.
-- Export the data the write-up needs while the dev database is intact.
+- Fix and document the evaluation methodology.
+- **Declare the AI-generated contribution.** Recommendations come from two arms — a
+  deterministic rule-based baseline and a server-side Gemini call — and that must be declared.
 
 ---
 
-## Open items carried forward
+## Housekeeping
 
-- **7 synthetic `@example.com` accounts** remain in the dev database, all with 0 projects.
-  You chose not to delete them; they can go any time.
-- **6 empty `archai_it_*` databases** sit on the cluster. They hold no data and cannot be
-  dropped without elevated Atlas rights. Worth requesting `dropDatabase` so future runs
-  leave no residue.
-- **The dev database holds 24 projects and 19 accounts.** This is the last remaining copy,
-  so it should be backed up before any future cleanup work.
+| Item | Detail |
+|---|---|
+| Dev database | 20 accounts, 25 projects. **Back this up** |
+| Synthetic accounts | 7 `@example.com` accounts remain, all with 0 projects |
+| Empty test databases | 7 empty `archai_it_*` databases on the cluster. Cannot be dropped without elevated Atlas rights — request `dropDatabase` so future runs leave no residue |
+| Dev servers | Ports 5000/5173 run a build from before the Simulation work. Restart to pick it up |
+
+---
 
 ## House rules for the rest of this plan
 
 1. One phase per session, confirmed before starting.
 2. No commit or push without explicit instruction.
-3. Integration and E2E suites always run against a disposable database; the dev database
-   is never written to by tests.
+3. Integration and E2E suites always run against a disposable database; the development
+   database is never written to by tests.
 4. Report PASS/FAIL per area at the end of each phase.
 5. Keep all work inside the project directory.

@@ -389,7 +389,7 @@ npm run dev
 
 Open **http://localhost:5173** in the browser. Leave this terminal running too.
 
-The frontend calls `http://localhost:5000/api` by default (`src/services/api.js`). To point it somewhere else, set `VITE_API_BASE_URL` in a `.env` file in the project root — that value overrides the default.
+The frontend calls a **relative** `/api`, which Vite proxies to `http://localhost:5000` in both dev and preview, so the browser never talks to the backend cross-origin and CORS is not involved during development (`src/services/api.js`). Set `API_PROXY_TARGET` in a `.env` file in the project root to aim the proxy somewhere else. Set `VITE_API_BASE_URL` only when the API is genuinely served from a different origin.
 
 ### 4. Check it worked
 
